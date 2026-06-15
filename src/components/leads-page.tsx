@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Loader2,
   Radar,
@@ -15,11 +15,29 @@ import {
   Sparkles,
   X,
   ChevronRight,
+  Filter,
+  ArrowRight,
 } from "lucide-react";
 import { Breadcrumbs, PageHeader } from "@/components/page-header";
 
+const SCROLL_LIST = "rounded-xl border border-border bg-card/30 max-h-[min(520px,60vh)] overflow-y-auto";
+const PAGE_SIZE = 25;
+
 type LeadStatus = "NEW" | "RESEARCHING" | "READY_OUTREACH" | "APPLIED" | "ARCHIVED";
-type LeadSource = "HN" | "REMOTEOK" | "GREENHOUSE" | "GITHUB" | "MANUAL";
+type LeadSource =
+  | "HN"
+  | "REMOTEOK"
+  | "GREENHOUSE"
+  | "GITHUB"
+  | "MANUAL"
+  | "FORTUNE_CAREERS"
+  | "WELLFOUND"
+  | "WWR"
+  | "BUILTIN"
+  | "INDEED"
+  | "LINKEDIN"
+  | "ASHBY"
+  | "LEVER";
 type Tab = "openings" | "companies" | "contacts" | "outreach";
 
 interface CompanyIntel {
@@ -46,6 +64,7 @@ interface Company {
   id: string;
   name: string;
   website?: string | null;
+  careersUrl?: string | null;
   domain?: string | null;
   githubOrg?: string | null;
   industry?: string | null;
@@ -55,6 +74,7 @@ interface Company {
   lastEnrichedAt?: string | null;
   greenhouseSlug?: string | null;
   leverSlug?: string | null;
+  linkedinSearchUrl?: string | null;
   _count?: { jobLeads: number; contacts: number; intel: number };
   newLeadCount?: number;
   intel?: CompanyIntel[];
@@ -91,9 +111,17 @@ interface OutreachDraft {
 const SOURCE_LABELS: Record<LeadSource, string> = {
   HN: "Hacker News",
   REMOTEOK: "RemoteOK",
-  GREENHOUSE: "Greenhouse / Lever",
+  GREENHOUSE: "Greenhouse",
   GITHUB: "GitHub",
   MANUAL: "Manual",
+  FORTUNE_CAREERS: "Fortune / Top Cos",
+  WELLFOUND: "Wellfound",
+  WWR: "We Work Remotely",
+  BUILTIN: "Built In",
+  INDEED: "Indeed",
+  LINKEDIN: "LinkedIn",
+  ASHBY: "Ashby",
+  LEVER: "Lever",
 };
 
 const STATUS_LABELS: Record<LeadStatus, string> = {
@@ -149,17 +177,21 @@ export function LeadsPageClient() {
   const [enriching, setEnriching] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
+  const [sourceBreakdown, setSourceBreakdown] = useState<Record<string, number> | null>(null);
   const [selectedLead, setSelectedLead] = useState<JobLead | null>(null);
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
   const [researching, setResearching] = useState(false);
   const [generatingOutreach, setGeneratingOutreach] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [contactCompanyFilter, setContactCompanyFilter] = useState<string>("ALL");
+  const [sourceFilter, setSourceFilter] = useState<LeadSource | "ALL">("ALL");
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   const load = useCallback(async () => {
     setLoading(true);
+    const sourceParam = sourceFilter !== "ALL" ? `&source=${sourceFilter}` : "";
     const [leadsRes, companiesRes, contactsRes, outreachRes] = await Promise.all([
-      fetch("/api/leads").then((r) => r.json()),
+      fetch(`/api/leads?limit=200${sourceParam}`).then((r) => r.json()),
       fetch("/api/leads/companies").then((r) => r.json()),
       fetch("/api/leads/contacts").then((r) => r.json()),
       fetch("/api/leads/outreach").then((r) => r.json()),
@@ -172,9 +204,10 @@ export function LeadsPageClient() {
     setContacts(contactsRes.contacts ?? []);
     setDrafts(outreachRes.drafts ?? []);
     setLoading(false);
-  }, []);
+  }, [sourceFilter]);
 
   useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
     load();
   }, [load]);
 
@@ -186,9 +219,17 @@ export function LeadsPageClient() {
       const res = await fetch("/api/leads/scan", { method: "POST" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Scan failed");
-      const parts = [`Added ${data.added} leads`, `${data.total} fetched`];
-      if (data.errors?.length) parts.push(`${data.errors.length} source warning(s)`);
-      setScanMessage(parts.join(" · "));
+
+      const breakdown = data.bySource as Record<string, number> | undefined;
+      if (breakdown) {
+        const parts = Object.entries(breakdown)
+          .sort((a, b) => b[1] - a[1])
+          .map(([src, n]) => `${SOURCE_LABELS[src as LeadSource] ?? src}: ${n}`);
+        setSourceBreakdown(breakdown);
+        setScanMessage(`Added ${data.added} · ${data.total} fetched · ${parts.join(" · ")}`);
+      } else {
+        setScanMessage(`Added ${data.added} leads · ${data.total} fetched`);
+      }
       if (data.errors?.length) setScanError(data.errors.join("; "));
       await load();
     } catch (err) {
@@ -293,6 +334,17 @@ export function LeadsPageClient() {
       ? contacts
       : contacts.filter((c) => c.company?.id === contactCompanyFilter);
 
+  const visibleLeads = leads.slice(0, visibleCount);
+  const hasMoreLeads = visibleCount < leads.length;
+
+  const sourceOptions = useMemo(() => {
+    const counts = leads.reduce<Record<string, number>>((acc, l) => {
+      acc[l.source] = (acc[l.source] ?? 0) + 1;
+      return acc;
+    }, {});
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  }, [leads]);
+
   const tabs: { key: Tab; label: string; icon: typeof Radar }[] = [
     { key: "openings", label: "Openings", icon: Briefcase },
     { key: "companies", label: "Companies", icon: Building2 },
@@ -301,263 +353,312 @@ export function LeadsPageClient() {
   ];
 
   return (
-    <div className="max-w-6xl mx-auto p-4 lg:p-8">
-      <Breadcrumbs items={[{ label: "Dashboard", href: "/" }, { label: "Insider Tracker" }]} />
-      <PageHeader
-        title="Insider Tracker"
-        description="Lead intelligence — scan openings, enrich companies, research roles, draft outreach"
-        actions={
-          <>
-            <button
-              onClick={runScan}
-              disabled={scanning}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-dim disabled:opacity-60"
-            >
-              {scanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Radar className="w-4 h-4" />}
-              Scan for openings
-            </button>
-            <button
-              onClick={runEnrichAll}
-              disabled={enriching}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm hover:bg-card-hover disabled:opacity-60"
-            >
-              {enriching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-              Enrich all
-            </button>
-          </>
-        }
-      />
+    <div className="h-full flex flex-col overflow-hidden max-w-6xl mx-auto p-4 lg:p-6">
+      <div className="shrink-0">
+        <Breadcrumbs items={[{ label: "Dashboard", href: "/" }, { label: "Insider Tracker" }]} />
+        <PageHeader
+          title="Insider Tracker"
+          description="Scan 80+ top companies, job boards, and ATS feeds — enrich, research, outreach"
+          actions={
+            <>
+              <button
+                onClick={runScan}
+                disabled={scanning}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-dim disabled:opacity-60"
+              >
+                {scanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Radar className="w-4 h-4" />}
+                Scan for openings
+              </button>
+              <button
+                onClick={runEnrichAll}
+                disabled={enriching}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm hover:bg-card-hover disabled:opacity-60"
+              >
+                {enriching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                Enrich all
+              </button>
+            </>
+          }
+        />
 
-      <p className="text-xs text-muted mb-2">Last scan: {formatRelative(lastScanAt)}</p>
-      {scanMessage && <p className="text-xs text-emerald-400 mb-2">{scanMessage}</p>}
-      {scanError && (
-        <p className="text-xs text-amber-400 mb-2 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20">
-          {scanError}
-        </p>
-      )}
-
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-        {[
-          { label: "Companies tracked", value: stats.companiesTracked },
-          { label: "Open roles", value: stats.totalOpen, accent: true },
-          { label: "New today", value: stats.newToday, accent: stats.newToday > 0 },
-          { label: "Contacts found", value: stats.contactsFound },
-        ].map((s) => (
-          <div key={s.label} className="p-3 rounded-xl bg-card border border-border">
-            <p className="text-[10px] text-muted uppercase tracking-wide">{s.label}</p>
-            <p className={`text-2xl font-bold mt-0.5 ${s.accent ? "text-accent" : ""}`}>{s.value}</p>
-          </div>
-        ))}
-      </div>
-
-      <div className="flex flex-wrap gap-2 mb-6 border-b border-border pb-3">
-        {tabs.map(({ key, label, icon: Icon }) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-              tab === key ? "bg-accent/10 text-accent border border-accent/30" : "text-muted hover:bg-card-hover"
-            }`}
-          >
-            <Icon className="w-4 h-4" />
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {loading ? (
-        <div className="flex justify-center py-16">
-          <Loader2 className="w-8 h-8 animate-spin text-accent" />
+        <div className="mb-3 p-2.5 rounded-lg bg-accent/5 border border-accent/20 flex items-center gap-2 text-xs text-muted">
+          <ArrowRight className="w-3.5 h-3.5 text-accent shrink-0" />
+          <span>
+            Pipeline: scan openings → enrich companies → research roles → draft outreach. Pair with{" "}
+            <a href="/discover" className="text-accent hover:underline">Discover</a> and{" "}
+            <a href="/queue" className="text-accent hover:underline">Queue</a> for content workflow.
+          </span>
         </div>
-      ) : (
-        <>
-          {tab === "openings" && (
-            <div className="space-y-2">
-              {leads.length === 0 ? (
-                <div className="p-10 rounded-xl border border-dashed border-border text-center">
-                  <Radar className="w-10 h-10 mx-auto mb-3 text-muted opacity-50" />
-                  <p className="text-sm text-muted mb-3">No openings yet. Run a scan to pull from RemoteOK, Hacker News, GitHub, and ATS boards.</p>
-                  <button onClick={runScan} disabled={scanning} className="px-4 py-2 rounded-lg bg-accent text-white text-sm">
-                    Scan for openings
-                  </button>
-                </div>
-              ) : (
-                leads.map((lead) => (
-                  <button
-                    key={lead.id}
-                    onClick={() => setSelectedLead(lead)}
-                    className="w-full text-left p-4 rounded-xl bg-card border border-border hover:border-accent/30 transition-colors flex items-center gap-4"
-                  >
-                    <div className="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center shrink-0">
-                      <Briefcase className="w-5 h-5 text-accent" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-medium text-sm">{lead.title}</span>
-                        {lead.remote && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent">Remote</span>
-                        )}
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded border ${STATUS_COLORS[lead.status]}`}>
-                          {STATUS_LABELS[lead.status]}
-                        </span>
-                      </div>
-                      <p className="text-xs text-muted mt-1">
-                        {lead.companyName ?? "Unknown company"} · {SOURCE_LABELS[lead.source]} · {formatDate(lead.postedAt ?? lead.capturedAt)}
-                      </p>
-                    </div>
-                    <ChevronRight className="w-4 h-4 text-muted shrink-0" />
-                  </button>
-                ))
-              )}
-            </div>
-          )}
 
-          {tab === "companies" && (
-            <div className="grid md:grid-cols-2 gap-3">
-              {companies.length === 0 ? (
-                <p className="text-sm text-muted col-span-2 p-8 text-center border border-dashed border-border rounded-xl">
-                  Companies appear automatically when you scan job openings.
-                </p>
-              ) : (
-                companies.map((co) => (
-                  <button
-                    key={co.id}
-                    onClick={() => openCompanyProfile(co.id)}
-                    className="p-4 rounded-xl bg-card border border-border hover:border-accent/30 text-left transition-colors"
+        <p className="text-xs text-muted mb-2">Last scan: {formatRelative(lastScanAt)}</p>
+        {scanMessage && <p className="text-xs text-emerald-400 mb-2">{scanMessage}</p>}
+        {sourceBreakdown && (
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {Object.entries(sourceBreakdown)
+              .sort((a, b) => b[1] - a[1])
+              .map(([src, n]) => (
+                <span key={src} className="text-[10px] px-2 py-0.5 rounded-full bg-card border border-border">
+                  {SOURCE_LABELS[src as LeadSource] ?? src}: <strong>{n}</strong>
+                </span>
+              ))}
+          </div>
+        )}
+        {scanError && (
+          <p className="text-xs text-amber-400 mb-2 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20">
+            {scanError}
+          </p>
+        )}
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-4">
+          {[
+            { label: "Companies tracked", value: stats.companiesTracked },
+            { label: "Open roles", value: stats.totalOpen, accent: true },
+            { label: "New today", value: stats.newToday, accent: stats.newToday > 0 },
+            { label: "Contacts found", value: stats.contactsFound },
+          ].map((s) => (
+            <div key={s.label} className="p-2.5 rounded-xl bg-card border border-border">
+              <p className="text-[10px] text-muted uppercase tracking-wide">{s.label}</p>
+              <p className={`text-xl font-bold mt-0.5 ${s.accent ? "text-accent" : ""}`}>{s.value}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap gap-2 mb-3 border-b border-border pb-3">
+          {tabs.map(({ key, label, icon: Icon }) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                tab === key ? "bg-accent/10 text-accent border border-accent/30" : "text-muted hover:bg-card-hover"
+              }`}
+            >
+              <Icon className="w-4 h-4" />
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+        {loading ? (
+          <div className="flex justify-center py-16">
+            <Loader2 className="w-8 h-8 animate-spin text-accent" />
+          </div>
+        ) : (
+          <>
+            {tab === "openings" && (
+              <div className="flex flex-col min-h-0 flex-1">
+                <div className="flex items-center gap-2 mb-2 shrink-0">
+                  <Filter className="w-3.5 h-3.5 text-muted" />
+                  <select
+                    value={sourceFilter}
+                    onChange={(e) => setSourceFilter(e.target.value as LeadSource | "ALL")}
+                    className="bg-card border border-border rounded-lg px-2 py-1.5 text-xs"
                   >
-                    <p className="font-semibold text-sm">{co.name}</p>
-                    <p className="text-xs text-muted mt-1">
-                      {co._count?.jobLeads ?? 0} roles · {co._count?.contacts ?? 0} contacts · enriched {formatRelative(co.lastEnrichedAt)}
+                    <option value="ALL">All sources ({leads.length})</option>
+                    {sourceOptions.map(([src, n]) => (
+                      <option key={src} value={src}>
+                        {SOURCE_LABELS[src as LeadSource] ?? src} ({n})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {leads.length === 0 ? (
+                  <div className="p-10 rounded-xl border border-dashed border-border text-center shrink-0">
+                    <Radar className="w-10 h-10 mx-auto mb-3 text-muted opacity-50" />
+                    <p className="text-sm text-muted mb-3">
+                      No openings yet. Scan pulls from Fortune 80+, RemoteOK, Indeed, LinkedIn, Wellfound, Built In, HN, GitHub, and ATS boards.
                     </p>
-                    {co.description && <p className="text-xs text-muted mt-2 line-clamp-2">{co.description}</p>}
-                  </button>
-                ))
-              )}
-            </div>
-          )}
-
-          {tab === "contacts" && (
-            <div>
-              <div className="mb-4">
-                <select
-                  value={contactCompanyFilter}
-                  onChange={(e) => setContactCompanyFilter(e.target.value)}
-                  className="bg-card border border-border rounded-lg px-3 py-2 text-sm"
-                >
-                  <option value="ALL">All companies</option>
-                  {companies.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {filteredContacts.length === 0 ? (
-                <p className="text-sm text-muted p-8 text-center border border-dashed border-border rounded-xl">
-                  No contacts yet. Enrich companies to discover emails and team members.
-                </p>
-              ) : (
-                <div className="rounded-xl border border-border overflow-hidden">
-                  <table className="w-full text-sm">
-                    <thead className="bg-card border-b border-border">
-                      <tr className="text-left text-xs text-muted">
-                        <th className="p-3 font-medium">Name</th>
-                        <th className="p-3 font-medium">Title</th>
-                        <th className="p-3 font-medium">Company</th>
-                        <th className="p-3 font-medium">Contact</th>
-                        <th className="p-3 font-medium">Confidence</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredContacts.map((c) => (
-                        <tr key={c.id} className="border-b border-border/50 hover:bg-card/50">
-                          <td className="p-3 font-medium">{c.name}</td>
-                          <td className="p-3 text-muted">{c.title ?? "—"}</td>
-                          <td className="p-3 text-muted">{c.company?.name ?? "—"}</td>
-                          <td className="p-3">
-                            {c.email ? (
-                              <a href={`mailto:${c.email}`} className="text-accent hover:underline text-xs">
-                                {c.email}
-                              </a>
-                            ) : c.linkedinUrl ? (
-                              <a href={c.linkedinUrl} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline text-xs">
-                                LinkedIn
-                              </a>
-                            ) : (
-                              <span className="text-muted text-xs">—</span>
-                            )}
-                          </td>
-                          <td className="p-3">
-                            <span
-                              className={`text-[10px] px-1.5 py-0.5 rounded ${
-                                c.confidence === "HIGH"
-                                  ? "bg-emerald-500/10 text-emerald-400"
-                                  : c.confidence === "MEDIUM"
-                                    ? "bg-amber-500/10 text-amber-400"
-                                    : "bg-muted/10 text-muted"
-                              }`}
-                            >
-                              {c.confidence}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
-
-          {tab === "outreach" && (
-            <div className="space-y-3">
-              {drafts.length === 0 ? (
-                <p className="text-sm text-muted p-8 text-center border border-dashed border-border rounded-xl">
-                  No outreach drafts yet. Open a lead and click &quot;Generate outreach email&quot;.
-                </p>
-              ) : (
-                drafts.map((draft) => (
-                  <div key={draft.id} className="p-4 rounded-xl bg-card border border-border">
-                    <div className="flex items-start justify-between gap-3 mb-3">
-                      <div>
-                        <p className="font-medium text-sm">{draft.subject}</p>
-                        <p className="text-xs text-muted mt-0.5">
-                          {draft.jobLead?.title ?? "General"} · {draft.jobLead?.companyName ?? ""} · {formatRelative(draft.createdAt)}
-                        </p>
+                    <button onClick={runScan} disabled={scanning} className="px-4 py-2 rounded-lg bg-accent text-white text-sm">
+                      Scan for openings
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className={`${SCROLL_LIST} flex-1 min-h-0`}>
+                      <div className="space-y-1.5 p-2">
+                        {visibleLeads.map((lead) => (
+                          <button
+                            key={lead.id}
+                            onClick={() => setSelectedLead(lead)}
+                            className="w-full text-left p-3 rounded-xl bg-card border border-border hover:border-accent/30 transition-colors flex items-center gap-3"
+                          >
+                            <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center shrink-0">
+                              <Briefcase className="w-4 h-4 text-accent" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-medium text-sm">{lead.title}</span>
+                                {lead.remote && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent">Remote</span>
+                                )}
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded border ${STATUS_COLORS[lead.status]}`}>
+                                  {STATUS_LABELS[lead.status]}
+                                </span>
+                              </div>
+                              <p className="text-xs text-muted mt-0.5 truncate">
+                                {lead.companyName ?? "Unknown"} · {SOURCE_LABELS[lead.source]} · {formatDate(lead.postedAt ?? lead.capturedAt)}
+                              </p>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-muted shrink-0" />
+                          </button>
+                        ))}
                       </div>
-                      <span
-                        className={`text-[10px] px-2 py-0.5 rounded border ${
-                          draft.status === "SENT" ? "text-emerald-400 border-emerald-400/30" : "text-muted border-border"
-                        }`}
-                      >
-                        {draft.status}
-                      </span>
                     </div>
-                    <pre className="text-xs text-muted whitespace-pre-wrap font-sans mb-3 max-h-40 overflow-y-auto">{draft.body}</pre>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => copyDraft(draft)}
-                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-border text-xs hover:bg-card-hover"
-                      >
-                        {copiedId === draft.id ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                        Copy
-                      </button>
-                      {draft.status === "DRAFT" && (
+                    <div className="mt-2 flex items-center justify-between text-xs text-muted shrink-0">
+                      <span>Showing {visibleLeads.length} of {leads.length}</span>
+                      {hasMoreLeads && (
                         <button
-                          onClick={() => markDraftSent(draft.id)}
-                          className="px-3 py-1.5 rounded-lg bg-accent/10 text-accent text-xs hover:bg-accent/20"
+                          onClick={() => setVisibleCount((n) => n + PAGE_SIZE)}
+                          className="px-3 py-1.5 rounded-lg border border-border hover:bg-card-hover text-sm text-foreground"
                         >
-                          Mark sent
+                          Load more
                         </button>
                       )}
                     </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {tab === "companies" && (
+              <div className={`${SCROLL_LIST} flex-1 min-h-0`}>
+                <div className="grid md:grid-cols-2 gap-2 p-2">
+                  {companies.length === 0 ? (
+                    <p className="text-sm text-muted col-span-2 p-8 text-center">
+                      Companies appear when you scan job openings.
+                    </p>
+                  ) : (
+                    companies.map((co) => (
+                      <button
+                        key={co.id}
+                        onClick={() => openCompanyProfile(co.id)}
+                        className="p-3 rounded-xl bg-card border border-border hover:border-accent/30 text-left transition-colors"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="font-semibold text-sm">{co.name}</p>
+                          {co.lastEnrichedAt ? (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 shrink-0">Enriched</span>
+                          ) : (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-muted/10 text-muted shrink-0">Pending</span>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted mt-1">
+                          {co._count?.jobLeads ?? 0} roles · {co._count?.contacts ?? 0} contacts
+                        </p>
+                        {co.careersUrl && (
+                          <p className="text-[10px] text-accent mt-1 truncate">{co.careersUrl.replace(/^https?:\/\//, "")}</p>
+                        )}
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+
+            {tab === "contacts" && (
+              <div className="flex flex-col min-h-0 flex-1">
+                <div className="mb-2 shrink-0">
+                  <select
+                    value={contactCompanyFilter}
+                    onChange={(e) => setContactCompanyFilter(e.target.value)}
+                    className="bg-card border border-border rounded-lg px-3 py-1.5 text-xs"
+                  >
+                    <option value="ALL">All companies</option>
+                    {companies.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+                {filteredContacts.length === 0 ? (
+                  <p className="text-sm text-muted p-8 text-center border border-dashed border-border rounded-xl">
+                    No contacts yet. Enrich companies to discover emails and team members.
+                  </p>
+                ) : (
+                  <div className={`${SCROLL_LIST} flex-1 min-h-0 overflow-x-auto`}>
+                    <table className="w-full text-sm">
+                      <thead className="bg-card border-b border-border sticky top-0">
+                        <tr className="text-left text-xs text-muted">
+                          <th className="p-2 font-medium">Name</th>
+                          <th className="p-2 font-medium">Title</th>
+                          <th className="p-2 font-medium">Company</th>
+                          <th className="p-2 font-medium">Contact</th>
+                          <th className="p-2 font-medium">Conf.</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredContacts.map((c) => (
+                          <tr key={c.id} className="border-b border-border/50 hover:bg-card/50">
+                            <td className="p-2 font-medium">{c.name}</td>
+                            <td className="p-2 text-muted">{c.title ?? "—"}</td>
+                            <td className="p-2 text-muted">{c.company?.name ?? "—"}</td>
+                            <td className="p-2">
+                              {c.email ? (
+                                <a href={`mailto:${c.email}`} className="text-accent hover:underline text-xs">{c.email}</a>
+                              ) : c.linkedinUrl ? (
+                                <a href={c.linkedinUrl} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline text-xs">LinkedIn</a>
+                              ) : (
+                                <span className="text-muted text-xs">—</span>
+                              )}
+                            </td>
+                            <td className="p-2">
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                                c.confidence === "HIGH" ? "bg-emerald-500/10 text-emerald-400"
+                                  : c.confidence === "MEDIUM" ? "bg-amber-500/10 text-amber-400"
+                                    : "bg-muted/10 text-muted"
+                              }`}>{c.confidence}</span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
-                ))
-              )}
-            </div>
-          )}
-        </>
-      )}
+                )}
+              </div>
+            )}
+
+            {tab === "outreach" && (
+              <div className={`${SCROLL_LIST} flex-1 min-h-0`}>
+                <div className="space-y-2 p-2">
+                  {drafts.length === 0 ? (
+                    <p className="text-sm text-muted p-8 text-center">
+                      No outreach drafts yet. Open a lead and click &quot;Generate outreach email&quot;.
+                    </p>
+                  ) : (
+                    drafts.map((draft) => (
+                      <div key={draft.id} className="p-3 rounded-xl bg-card border border-border">
+                        <div className="flex items-start justify-between gap-3 mb-2">
+                          <div>
+                            <p className="font-medium text-sm">{draft.subject}</p>
+                            <p className="text-xs text-muted mt-0.5">
+                              {draft.jobLead?.title ?? "General"} · {draft.jobLead?.companyName ?? ""} · {formatRelative(draft.createdAt)}
+                            </p>
+                          </div>
+                          <span className={`text-[10px] px-2 py-0.5 rounded border ${
+                            draft.status === "SENT" ? "text-emerald-400 border-emerald-400/30" : "text-muted border-border"
+                          }`}>{draft.status}</span>
+                        </div>
+                        <pre className="text-xs text-muted whitespace-pre-wrap font-sans mb-2 max-h-32 overflow-y-auto">{draft.body}</pre>
+                        <div className="flex gap-2">
+                          <button onClick={() => copyDraft(draft)} className="flex items-center gap-1 px-2 py-1 rounded-lg border border-border text-xs hover:bg-card-hover">
+                            {copiedId === draft.id ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                            Copy
+                          </button>
+                          {draft.status === "DRAFT" && (
+                            <button onClick={() => markDraftSent(draft.id)} className="px-2 py-1 rounded-lg bg-accent/10 text-accent text-xs hover:bg-accent/20">
+                              Mark sent
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
 
       {selectedLead && (
         <div className="fixed inset-0 z-50 flex justify-end">
@@ -580,17 +681,10 @@ export function LeadsPageClient() {
                 className={`text-xs px-2 py-1 rounded-lg border ${STATUS_COLORS[selectedLead.status]}`}
               >
                 {Object.entries(STATUS_LABELS).map(([k, v]) => (
-                  <option key={k} value={k}>
-                    {v}
-                  </option>
+                  <option key={k} value={k}>{v}</option>
                 ))}
               </select>
-              <a
-                href={selectedLead.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1 px-3 py-1 rounded-lg border border-border text-xs hover:bg-card-hover"
-              >
+              <a href={selectedLead.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 px-3 py-1 rounded-lg border border-border text-xs hover:bg-card-hover">
                 <ExternalLink className="w-3 h-3" /> View posting
               </a>
             </div>
@@ -621,7 +715,7 @@ export function LeadsPageClient() {
             {selectedLead.company?.intel && selectedLead.company.intel.length > 0 && (
               <div className="mb-4">
                 <p className="text-[10px] text-muted uppercase mb-2">Company intel</p>
-                <div className="space-y-2">
+                <div className="space-y-2 max-h-40 overflow-y-auto">
                   {selectedLead.company.intel.map((i) => (
                     <div key={i.id} className="text-xs p-2 rounded-lg bg-card border border-border">
                       <span className="text-accent font-medium">{i.type.replace("_", " ")}</span> — {i.title}
@@ -639,11 +733,7 @@ export function LeadsPageClient() {
                   <div key={c.id} className="text-xs py-1.5 border-b border-border/50">
                     <span className="font-medium">{c.name}</span>
                     {c.title && <span className="text-muted"> · {c.title}</span>}
-                    {c.email && (
-                      <a href={`mailto:${c.email}`} className="block text-accent hover:underline">
-                        {c.email}
-                      </a>
-                    )}
+                    {c.email && <a href={`mailto:${c.email}`} className="block text-accent hover:underline">{c.email}</a>}
                   </div>
                 ))}
               </div>
@@ -669,8 +759,18 @@ export function LeadsPageClient() {
               <div>
                 <h2 className="text-lg font-bold">{selectedCompany.name}</h2>
                 {selectedCompany.website && (
-                  <a href={selectedCompany.website} target="_blank" rel="noopener noreferrer" className="text-xs text-accent hover:underline">
+                  <a href={selectedCompany.website} target="_blank" rel="noopener noreferrer" className="text-xs text-accent hover:underline block">
                     {selectedCompany.website.replace(/^https?:\/\//, "")}
+                  </a>
+                )}
+                {selectedCompany.careersUrl && (
+                  <a href={selectedCompany.careersUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-muted hover:text-accent block mt-0.5">
+                    Careers page →
+                  </a>
+                )}
+                {selectedCompany.linkedinSearchUrl && (
+                  <a href={selectedCompany.linkedinSearchUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-muted hover:text-accent block mt-0.5">
+                    LinkedIn jobs →
                   </a>
                 )}
               </div>
@@ -679,24 +779,17 @@ export function LeadsPageClient() {
               </button>
             </div>
 
-            {selectedCompany.description && (
-              <p className="text-sm text-muted mb-4">{selectedCompany.description}</p>
-            )}
+            {selectedCompany.description && <p className="text-sm text-muted mb-4">{selectedCompany.description}</p>}
 
             {parseTechStack(selectedCompany.techStack).length > 0 && (
               <div className="mb-4 flex flex-wrap gap-1">
                 {parseTechStack(selectedCompany.techStack).map((t) => (
-                  <span key={t} className="text-[10px] px-2 py-0.5 rounded bg-card border border-border">
-                    {t}
-                  </span>
+                  <span key={t} className="text-[10px] px-2 py-0.5 rounded bg-card border border-border">{t}</span>
                 ))}
               </div>
             )}
 
-            <button
-              onClick={() => enrichCompany(selectedCompany.id)}
-              className="w-full mb-4 flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-accent/40 text-accent text-sm hover:bg-accent/10"
-            >
+            <button onClick={() => enrichCompany(selectedCompany.id)} className="w-full mb-4 flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-accent/40 text-accent text-sm hover:bg-accent/10">
               <RefreshCw className="w-4 h-4" /> Enrich now
             </button>
 
@@ -717,30 +810,30 @@ export function LeadsPageClient() {
             {selectedCompany.jobLeads && selectedCompany.jobLeads.length > 0 && (
               <div className="mb-4">
                 <p className="text-[10px] text-muted uppercase mb-2">Open roles ({selectedCompany.jobLeads.length})</p>
-                {selectedCompany.jobLeads.map((j) => (
-                  <button
-                    key={j.id}
-                    onClick={() => {
-                      setSelectedCompany(null);
-                      setSelectedLead(j);
-                      setTab("openings");
-                    }}
-                    className="block w-full text-left text-xs py-2 border-b border-border/50 hover:text-accent"
-                  >
-                    {j.title}
-                  </button>
-                ))}
+                <div className="max-h-40 overflow-y-auto">
+                  {selectedCompany.jobLeads.map((j) => (
+                    <button
+                      key={j.id}
+                      onClick={() => { setSelectedCompany(null); setSelectedLead(j); setTab("openings"); }}
+                      className="block w-full text-left text-xs py-2 border-b border-border/50 hover:text-accent"
+                    >
+                      {j.title}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
             {selectedCompany.contacts && selectedCompany.contacts.length > 0 && (
               <div>
                 <p className="text-[10px] text-muted uppercase mb-2">Contacts ({selectedCompany.contacts.length})</p>
-                {selectedCompany.contacts.map((c) => (
-                  <div key={c.id} className="text-xs py-1.5 border-b border-border/50">
-                    {c.name}{c.title ? ` · ${c.title}` : ""}
-                  </div>
-                ))}
+                <div className="max-h-40 overflow-y-auto">
+                  {selectedCompany.contacts.map((c) => (
+                    <div key={c.id} className="text-xs py-1.5 border-b border-border/50">
+                      {c.name}{c.title ? ` · ${c.title}` : ""}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>

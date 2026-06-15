@@ -23,7 +23,10 @@ export async function GET(request: NextRequest) {
 
   const todayStart = new Date(new Date().setHours(0, 0, 0, 0));
 
-  const [leads, settings, totalOpen, newToday, companiesTracked, contactsFound] = await Promise.all([
+  const limit = Math.min(parseInt(searchParams.get("limit") ?? "100", 10), 500);
+  const offset = parseInt(searchParams.get("offset") ?? "0", 10);
+
+  const [leads, settings, totalOpen, newToday, companiesTracked, contactsFound, totalMatching] = await Promise.all([
     prisma.jobLead.findMany({
       where,
       include: {
@@ -35,16 +38,22 @@ export async function GET(request: NextRequest) {
         },
       },
       orderBy: [{ capturedAt: "desc" }],
+      take: limit,
+      skip: offset,
     }),
     prisma.appSettings.findUnique({ where: { id: "default" } }),
     prisma.jobLead.count({ where: { status: { in: ["NEW", "RESEARCHING", "READY_OUTREACH"] } } }),
     prisma.jobLead.count({ where: { status: "NEW", capturedAt: { gte: todayStart } } }),
     prisma.company.count(),
     prisma.contact.count(),
+    prisma.jobLead.count({ where }),
   ]);
 
   return NextResponse.json({
     leads,
+    total: totalMatching,
+    limit,
+    offset,
     lastScanAt: settings?.lastLeadsScanAt ?? null,
     stats: { totalOpen, newToday, companiesTracked, contactsFound },
   });

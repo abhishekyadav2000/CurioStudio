@@ -3,7 +3,7 @@ import { LeadsPageClient } from "@/components/leads-page";
 
 export default function LeadsPage() {
   return (
-    <AppShell>
+    <AppShell noScroll>
       <LeadsPageClient />
     </AppShell>
   );

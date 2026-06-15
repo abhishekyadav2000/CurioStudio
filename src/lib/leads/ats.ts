@@ -59,7 +59,7 @@ export async function fetchLeverBoard(slug: string, companyName?: string): Promi
   return (postings ?? []).map((p) => ({
     title: p.text,
     url: p.hostedUrl,
-    source: "GREENHOUSE" as const,
+    source: "LEVER" as const,
     companyName: companyName ?? slug,
     location: p.categories?.location,
     remote: /remote/i.test(p.categories?.location ?? p.categories?.commitment ?? ""),

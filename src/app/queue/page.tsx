@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/app-shell";
 import { QueueProcessor } from "@/components/queue-processor";
@@ -13,8 +13,12 @@ import {
   Play,
   Trash2,
   MoreHorizontal,
+  ArrowRight,
 } from "lucide-react";
 import { STAGE_LABELS } from "@/lib/pipeline/constants";
+
+const PAGE_SIZE = 15;
+const SCROLL_LIST = "rounded-xl border border-border bg-card/30 max-h-[min(520px,60vh)] overflow-y-auto";
 
 interface Job {
   id: string;
@@ -36,6 +40,8 @@ export default function QueuePage() {
   const [deleting, setDeleting] = useState(false);
   const [updating, setUpdating] = useState<string | null>(null);
   const [showBulk, setShowBulk] = useState(false);
+  const [hideCompleted, setHideCompleted] = useState(true);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   async function load() {
     const res = await fetch("/api/jobs");
@@ -135,37 +141,53 @@ export default function QueuePage() {
 
   const totalJobs = counts.pending + counts.processing + counts.completed + counts.failed;
 
+  const filteredJobs = useMemo(() => {
+    const list = hideCompleted ? jobs.filter((j) => j.status !== "COMPLETED") : jobs;
+    return list;
+  }, [jobs, hideCompleted]);
+
+  const visibleJobs = filteredJobs.slice(0, visibleCount);
+  const hasMore = visibleCount < filteredJobs.length;
+
   return (
-    <AppShell>
-      <div className="max-w-4xl mx-auto p-4 lg:p-8">
-        <div className="flex items-start justify-between mb-4 gap-4 flex-wrap">
-          <div>
-            <h2 className="text-2xl font-bold">Queue</h2>
-            <p className="text-sm text-muted mt-1">
-              Pipeline: scan → sandbox → analyze → content. When done, open{" "}
-              <strong className="text-foreground">Results</strong> → Export Research PDF.
-            </p>
+    <AppShell noScroll>
+      <div className="h-full flex flex-col overflow-hidden max-w-4xl mx-auto p-4 lg:p-6">
+        <div className="shrink-0">
+          <div className="flex items-start justify-between mb-3 gap-4 flex-wrap">
+            <div>
+              <h2 className="text-xl font-bold">Queue</h2>
+              <p className="text-sm text-muted mt-1">
+                Pipeline: scan → sandbox → analyze → content. Open <strong className="text-foreground">Results</strong> → Export Research PDF.
+              </p>
+            </div>
+            <div className="flex gap-2 flex-wrap items-center">
+              {counts.pending > 0 && (
+                <button
+                  onClick={processAll}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white hover:bg-accent-dim text-sm"
+                >
+                  <Play className="w-4 h-4" />
+                  Process All ({counts.pending})
+                </button>
+              )}
+              {totalJobs > 0 && (
+                <button
+                  onClick={() => setShowBulk((s) => !s)}
+                  className="flex items-center gap-1 px-3 py-2 rounded-lg border border-border text-sm text-muted hover:text-foreground hover:bg-card-hover"
+                >
+                  <MoreHorizontal className="w-4 h-4" />
+                </button>
+              )}
+            </div>
           </div>
-          <div className="flex gap-2 flex-wrap items-center">
-            {counts.pending > 0 && (
-              <button
-                onClick={processAll}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white hover:bg-accent-dim text-sm"
-              >
-                <Play className="w-4 h-4" />
-                Process All ({counts.pending})
-              </button>
-            )}
-            {totalJobs > 0 && (
-              <button
-                onClick={() => setShowBulk((s) => !s)}
-                className="flex items-center gap-1 px-3 py-2 rounded-lg border border-border text-sm text-muted hover:text-foreground hover:bg-card-hover"
-              >
-                <MoreHorizontal className="w-4 h-4" />
-              </button>
-            )}
+
+          <div className="mb-3 p-2.5 rounded-lg bg-accent/5 border border-accent/20 flex items-center gap-2 text-xs text-muted">
+            <ArrowRight className="w-3.5 h-3.5 text-accent shrink-0" />
+            <span>
+              Queued from <Link href="/discover" className="text-accent hover:underline">Discover</Link>. After processing, review in{" "}
+              <Link href="/projects" className="text-accent hover:underline">Projects</Link> or record in Studio.
+            </span>
           </div>
-        </div>
 
         {showBulk && totalJobs > 0 && (
           <div className="mb-4 p-3 rounded-lg bg-card border border-border flex gap-2 flex-wrap text-sm">
@@ -189,7 +211,7 @@ export default function QueuePage() {
           </div>
         )}
 
-        <div className="flex gap-4 mb-4 text-sm">
+        <div className="flex gap-4 mb-3 text-sm items-center flex-wrap">
           {[
             { label: "Pending", value: counts.pending, color: "text-amber-400" },
             { label: "Processing", value: counts.processing, color: "text-blue-400" },
@@ -200,20 +222,33 @@ export default function QueuePage() {
               {s.label}: <strong className={s.color}>{s.value}</strong>
             </span>
           ))}
+          <label className="flex items-center gap-1.5 text-xs text-muted ml-auto cursor-pointer">
+            <input
+              type="checkbox"
+              checked={hideCompleted}
+              onChange={(e) => { setHideCompleted(e.target.checked); setVisibleCount(PAGE_SIZE); }}
+              className="rounded accent-accent"
+            />
+            Hide completed
+          </label>
+        </div>
         </div>
 
+        <div className="flex-1 min-h-0 flex flex-col">
         {loading ? (
           <Loader2 className="w-6 h-6 animate-spin text-accent mx-auto" />
         ) : jobs.length === 0 ? (
-          <div className="text-center py-16 text-muted">
+          <div className="text-center py-16 text-muted shrink-0">
             <p>Queue is empty.</p>
             <Link href="/discover" className="text-accent hover:underline text-sm mt-2 inline-block">
               Discover & Queue Top 5 →
             </Link>
           </div>
         ) : (
-          <div className="space-y-2">
-            {jobs.map((job) => {
+          <>
+            <div className={`${SCROLL_LIST} flex-1 min-h-0`}>
+              <div className="space-y-1.5 p-2">
+            {visibleJobs.map((job) => {
               const log: { stage: string; message: string }[] = job.pipelineLog
                 ? JSON.parse(job.pipelineLog).slice(-2)
                 : [];
@@ -268,8 +303,22 @@ export default function QueuePage() {
                 </div>
               );
             })}
-          </div>
+              </div>
+            </div>
+            <div className="mt-2 flex items-center justify-between text-xs text-muted shrink-0">
+              <span>Showing {visibleJobs.length} of {filteredJobs.length}</span>
+              {hasMore && (
+                <button
+                  onClick={() => setVisibleCount((n) => n + PAGE_SIZE)}
+                  className="px-3 py-1.5 rounded-lg border border-border hover:bg-card-hover text-sm text-foreground"
+                >
+                  Load more
+                </button>
+              )}
+            </div>
+          </>
         )}
+        </div>
       </div>
       <QueueProcessor />
     </AppShell>

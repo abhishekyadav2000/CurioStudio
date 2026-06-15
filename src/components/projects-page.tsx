@@ -8,6 +8,9 @@ import { StatusBadge } from "@/components/badges";
 import { formatRelative } from "@/lib/utils";
 import type { ProjectStatus } from "@prisma/client";
 
+const PAGE_SIZE = 20;
+const SCROLL_LIST = "rounded-xl border border-border bg-card/30 max-h-[min(520px,60vh)] overflow-y-auto";
+
 interface Project {
   id: string;
   name: string | null;
@@ -32,6 +35,7 @@ export function ProjectsPageClient() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batching, setBatching] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   useEffect(() => {
     fetch("/api/projects")
@@ -104,7 +108,8 @@ export function ProjectsPageClient() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto p-4 lg:p-8">
+    <div className="h-full flex flex-col overflow-hidden max-w-5xl mx-auto p-4 lg:p-6">
+      <div className="shrink-0">
       <Breadcrumbs items={[{ label: "Dashboard", href: "/" }, { label: "Projects" }]} />
       <PageHeader
         title="Projects"
@@ -141,7 +146,9 @@ export function ProjectsPageClient() {
           ) : null
         }
       />
+      </div>
 
+      <div className="flex-1 min-h-0 flex flex-col">
       {loading ? (
         <Loader2 className="w-8 h-8 animate-spin text-accent mx-auto" />
       ) : projects.length === 0 ? (
@@ -149,8 +156,10 @@ export function ProjectsPageClient() {
           No projects — start from <Link href="/discover" className="text-accent">Discover</Link>
         </p>
       ) : (
-        <div className="space-y-2">
-          {projects.map((p) => {
+        <>
+          <div className={`${SCROLL_LIST} flex-1 min-h-0`}>
+            <div className="space-y-1.5 p-2">
+          {projects.slice(0, visibleCount).map((p) => {
             const tags: string[] = p.tags ? JSON.parse(p.tags) : [];
             const isDuplicate = duplicateIds.has(p.id);
             return (
@@ -192,8 +201,22 @@ export function ProjectsPageClient() {
               </div>
             );
           })}
-        </div>
+            </div>
+          </div>
+          <div className="mt-2 flex items-center justify-between text-xs text-muted shrink-0">
+            <span>Showing {Math.min(visibleCount, projects.length)} of {projects.length}</span>
+            {visibleCount < projects.length && (
+              <button
+                onClick={() => setVisibleCount((n) => n + PAGE_SIZE)}
+                className="px-3 py-1.5 rounded-lg border border-border hover:bg-card-hover text-sm text-foreground"
+              >
+                Load more
+              </button>
+            )}
+          </div>
+        </>
       )}
+      </div>
     </div>
   );
 }

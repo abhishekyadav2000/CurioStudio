@@ -4,7 +4,7 @@ import { QueueProcessor } from "@/components/queue-processor";
 
 export default function ProjectsPage() {
   return (
-    <AppShell>
+    <AppShell noScroll>
       <ProjectsPageClient />
       <QueueProcessor />
     </AppShell>

@@ -4,7 +4,7 @@ import { QueueProcessor } from "@/components/queue-processor";
 
 export default function Discover() {
   return (
-    <AppShell>
+    <AppShell noScroll>
       <DiscoverPage />
       <QueueProcessor />
     </AppShell>

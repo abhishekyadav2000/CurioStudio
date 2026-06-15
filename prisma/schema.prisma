@@ -295,6 +295,14 @@ enum LeadSource {
   GREENHOUSE
   GITHUB
   MANUAL
+  FORTUNE_CAREERS
+  WELLFOUND
+  WWR
+  BUILTIN
+  INDEED
+  LINKEDIN
+  ASHBY
+  LEVER
 }
 
 enum LeadStatus {
@@ -340,6 +348,10 @@ model Company {
   notes           String?
   greenhouseSlug  String?
   leverSlug       String?
+  ashbySlug       String?
+  careersUrl      String?
+  atsType         String?
+  linkedinSearchUrl String?
   lastCheckedAt   DateTime?
   lastEnrichedAt  DateTime?
   jobLeads        JobLead[]

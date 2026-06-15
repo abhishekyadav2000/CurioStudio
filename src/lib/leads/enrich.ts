@@ -5,6 +5,7 @@ import {
   extractPeople,
   extractTitle,
   fetchCompanyPages,
+  fetchPage,
   guessDomain,
   stripHtml,
 } from "./scrape";
@@ -113,6 +114,7 @@ export async function enrichCompany(companyId: string): Promise<EnrichResult> {
   const website =
     company.website ??
     (domain ? `https://${domain}` : undefined);
+  const careersUrl = company.careersUrl;
 
   const updateData: Record<string, unknown> = { lastEnrichedAt: new Date() };
   if (domain && !company.domain) {
@@ -158,6 +160,25 @@ export async function enrichCompany(companyId: string): Promise<EnrichResult> {
         if (await addIntel(companyId, { type: "JOB_POST", title: pageTitle, url: page.url, summary: stripHtml(page.html).slice(0, 500) })) {
           intelAdded++;
         }
+      }
+    }
+  }
+
+  if (careersUrl) {
+    const careersHtml = await fetchPage(careersUrl);
+    if (careersHtml) {
+      for (const email of extractEmails(careersHtml)) {
+        if (await upsertContact(companyId, { name: email.split("@")[0], email, source: "careers_page", confidence: "MEDIUM" })) {
+          contactsAdded++;
+        }
+      }
+      if (await addIntel(companyId, {
+        type: "JOB_POST",
+        title: "Careers page",
+        url: careersUrl,
+        summary: stripHtml(careersHtml).slice(0, 500),
+      })) {
+        intelAdded++;
       }
     }
   }

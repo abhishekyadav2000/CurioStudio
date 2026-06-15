@@ -178,7 +178,8 @@ export function DiscoverPage() {
   const hasMore = visibleCount < entries.length;
 
   return (
-    <div className="max-w-5xl mx-auto p-4 lg:p-8">
+    <div className="h-full flex flex-col overflow-hidden max-w-5xl mx-auto p-4 lg:p-6">
+      <div className="shrink-0">
       <Breadcrumbs items={[{ label: "Dashboard", href: "/" }, { label: "Discover" }]} />
       <PageHeader
         title="Discover"
@@ -290,7 +291,9 @@ export function DiscoverPage() {
           </p>
         </div>
       </div>
+      </div>
 
+      <div className="flex-1 min-h-0 flex flex-col">
       {selected.size > 0 && (
         <div className="mb-4 p-3 rounded-xl bg-card border border-border flex items-center justify-between">
           <span className="text-sm text-muted">{selected.size} selected</span>
@@ -382,6 +385,7 @@ export function DiscoverPage() {
           </div>
         </>
       )}
+      </div>
     </div>
   );
 }

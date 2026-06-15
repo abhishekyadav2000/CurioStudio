@@ -11,6 +11,7 @@ export async function GET() {
       },
     },
     orderBy: { name: "asc" },
+    take: 50,
   });
 
   const enriched = companies.map((c) => ({

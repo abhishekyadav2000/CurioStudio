@@ -374,7 +374,8 @@ export function CalendarPageClient() {
           })}
         </div>
       ) : (
-        <div className="space-y-2">
+        <div className="rounded-xl border border-border bg-card/30 max-h-[min(520px,60vh)] overflow-y-auto">
+          <div className="space-y-1.5 p-2">
           {slots.map((s) => (
             <div
               key={s.id}
@@ -403,6 +404,7 @@ export function CalendarPageClient() {
             </div>
           ))}
           {slots.length === 0 && <p className="text-muted text-sm py-8 text-center">No slots yet — create one above</p>}
+          </div>
         </div>
       )}
 
