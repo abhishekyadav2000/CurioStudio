@@ -1,0 +1,455 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum ProjectStatus {
+  FOUND
+  SCANNED
+  SANDBOX_CREATED
+  INSTALL_FAILED
+  INSTALL_SUCCESSFUL
+  RUNNING
+  REVIEWED
+  SCRIPT_READY
+  VIDEO_RECORDED
+  UPLOADED
+  SKIPPED
+}
+
+enum ProductionStep {
+  IMPORT
+  SCRIPT
+  SLIDES
+  REFINE
+  RECORD
+  EDIT
+  PUBLISH
+}
+
+enum ProjectSource {
+  GITHUB
+  GITLAB
+  BITBUCKET
+  DOCKER_HUB
+  KAGGLE
+  HUGGINGFACE
+  PAPERS_WITH_CODE
+  OTHER
+}
+
+model Project {
+  id          String        @id @default(cuid())
+  url         String
+  source      ProjectSource
+  status      ProjectStatus @default(FOUND)
+  name        String?
+  description String?
+  owner       String?
+  stars       Int?
+  language    String?
+  license     String?
+  lastCommit  DateTime?
+  readme      String?
+  techStack   String?       // JSON array
+  metadata    String?       // JSON blob
+  tags        String?       // JSON array of label strings
+
+  scan        Scan?
+  sandbox     Sandbox?
+  scorecard   Scorecard?
+  content     Content?
+  notes       Note[]
+  youtubeMetadata YouTubeMetadata?
+
+  workflowStep       ProductionStep @default(IMPORT)
+  scheduledPublishAt DateTime?
+  thumbnailPath      String?
+  screenshots        String?        // JSON: [{id, path, filename, uploadedAt}]
+  recordingChecklist String?        // JSON: checklist item states
+
+  contentSlots       ContentSlot[]
+  episodes           Episode[]
+  marketingCampaigns MarketingCampaign[]
+  projectWorkflow    ProjectWorkflow?
+  analyticsEntries   AnalyticsEntry[]
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+model Scan {
+  id              String   @id @default(cuid())
+  projectId       String   @unique
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  riskScore       Int      @default(0) // 0-100
+  riskLevel       String   @default("unknown") // low, medium, high, critical
+  detectedStack   String?  // JSON
+  dependencyFiles String?  // JSON
+  suspiciousFiles String?  // JSON
+  vulnerabilities String?  // JSON from Trivy/OSV
+  installScripts  String?  // JSON
+  networkCalls    String?  // JSON
+  licenseInfo     String?
+  openIssues      Int?
+  lastCommitDays  Int?
+  scanLog         String?
+  rawReport       String?  // JSON
+
+  createdAt       DateTime @default(now())
+}
+
+model Sandbox {
+  id            String   @id @default(cuid())
+  projectId     String   @unique
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  sandboxId     String?  // E2B sandbox ID
+  provider      String   @default("e2b")
+  status        String   @default("pending") // pending, creating, running, completed, failed, destroyed
+  installCommand String?
+  runCommand    String?
+  logs          String?
+  errors        String?
+  verdict       String?  // passed, failed, simulated, skipped
+  smokeTest     String?  // JSON: {command, exitCode, output, skipped}
+  exitCode      Int?
+  durationMs    Int?
+  cpuLimit      String   @default("1")
+  memoryLimit   String   @default("512MB")
+  timeoutSec    Int      @default(300)
+  networkPolicy String   @default("restricted")
+
+  createdAt     DateTime @default(now())
+  completedAt   DateTime?
+}
+
+model Scorecard {
+  id                String   @id @default(cuid())
+  projectId         String   @unique
+  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  whatItDoes        String?
+  problemSolved     String?
+  installDifficulty Int?     // 1-10
+  usefulnessScore   Int?     // 1-10
+  videoWorthiness   Int?     // 1-10
+  pros              String?  // JSON array
+  cons              String?  // JSON array
+  whatWorked        String?
+  whatFailed        String?
+  setupSteps        String?  // JSON
+  overallScore      Int?     // 1-100
+  recommendation    String?
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model Content {
+  id              String   @id @default(cuid())
+  projectId       String   @unique
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  youtubeTitle    String?
+  hook            String?
+  script5min      String?
+  script10min     String?
+  thumbnailIdea   String?
+  description     String?
+  hashtags        String?  // JSON array
+  linkedinPost    String?
+  shortsScript    String?
+  simpleExplanation String?
+  technicalExplanation String?
+  presentationSlides String? // JSON array of {title, body, notes}
+  notebookLmBrief   String?  // export for NotebookLM
+  researchDocument  String?  // cached comprehensive research markdown for PDF/NotebookLM
+  recordingOutline  String?  // structured outline for Riverside/Meet
+  refinedScript     String?  // script aligned to slides
+  selectedScriptType String? @default("5min")
+  thumbnailPrompt   String?
+  canvaExportNotes    String?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model YouTubeMetadata {
+  id            String   @id @default(cuid())
+  projectId     String   @unique
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  title         String?
+  description   String?
+  tags          String?  // JSON array
+  category      String?  @default("28")
+  scheduledAt   DateTime?
+  privacyStatus String?  @default("private")
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Note {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  content   String
+  createdAt DateTime @default(now())
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model Job {
+  id          String    @id @default(cuid())
+  url         String
+  status      JobStatus @default(PENDING)
+  projectId   String?
+  error       String?
+  stage       String?   // import, scan, sandbox, analyze, content
+  pipelineLog String?   // JSON array of {stage, at, message}
+  source      String    @default("manual") // manual, trending, batch
+  position    Int       @default(0)
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+}
+
+enum DiscoverySource {
+  GITHUB
+  HUGGINGFACE
+  DOCKER_HUB
+  KAGGLE
+  GITLAB
+  NPM
+  PYPI
+  HACKER_NEWS
+  AWESOME
+}
+
+model TrendingEntry {
+  id             String          @id @default(cuid())
+  source         DiscoverySource @default(GITHUB)
+  owner          String
+  repo           String
+  fullName       String
+  url            String
+  description    String?
+  language       String?
+  taskType       String?
+  starsToday     String?
+  metricLabel    String?
+  metricValue    String?
+  period         String          @default("daily") // daily, weekly
+  spokenLanguage String          @default("en")
+  progLanguage   String          @default("") // empty = any
+  rank           Int
+  fetchedAt      DateTime        @default(now())
+  imported       Boolean         @default(false)
+  projectId      String?
+
+  @@unique([source, fullName])
+}
+
+model AppSettings {
+  id              String   @id @default("default")
+  llmProvider     String   @default("auto") // legacy global: auto, ollama, openai, claude, template
+  ollamaBaseUrl   String   @default("http://localhost:11434")
+  ollamaModel     String   @default("llama3.3")
+  ollamaVisionModel String @default("llava")
+  openaiModel     String   @default("gpt-4o-mini")
+  openaiScriptModel String @default("gpt-4o")
+  openaiQuickModel  String @default("gpt-4o-mini")
+  anthropicModel  String   @default("claude-sonnet-4-20250514")
+  scriptProvider  String   @default("auto") // auto, ollama, openai, claude, template
+  slideProvider   String   @default("auto")
+  refineProvider  String   @default("auto")
+  thumbnailProvider String @default("auto")
+  seriesName      String   @default("Everyday Series")
+  episodePrefix   String   @default("Ep")
+  creatorName     String   @default("")
+  defaultScript   String   @default("5min") // 5min, 10min
+  autoQueueTrending Int    @default(3) // how many trending to queue on refresh
+  healthWatchdog  Boolean  @default(true)
+  updatedAt       DateTime @updatedAt
+}
+
+// ─── /business — calendar, showtime, content slots ───────────────────────────
+
+enum Platform {
+  YOUTUBE
+  LINKEDIN
+  SHORTS
+  TWITTER
+  BLOG
+}
+
+enum SlotStatus {
+  PLANNED
+  SCHEDULED
+  RECORDED
+  PUBLISHED
+  SKIPPED
+}
+
+model ContentSlot {
+  id            String     @id @default(cuid())
+  projectId     String?
+  project       Project?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  title         String
+  scheduledAt   DateTime
+  platform      Platform
+  status        SlotStatus @default(PLANNED)
+  episodeNumber Int?
+  seriesName    String?
+  notes         String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+}
+
+enum EpisodeStatus {
+  DRAFT
+  SCHEDULED
+  RECORDED
+  EDITING
+  PUBLISHED
+}
+
+model Episode {
+  id                  String             @id @default(cuid())
+  projectId           String
+  project             Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  number              Int
+  title               String
+  airDate             DateTime?
+  status              EpisodeStatus      @default(DRAFT)
+  recordingDate       DateTime?
+  publishDate         DateTime?
+  marketingCampaignId String?
+  marketingCampaign   MarketingCampaign? @relation(fields: [marketingCampaignId], references: [id], onDelete: SetNull)
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  @@unique([projectId, number])
+}
+
+// ─── /marketing — campaigns, hashtags, analytics ─────────────────────────────
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  LIVE
+  COMPLETED
+}
+
+model MarketingCampaign {
+  id              String         @id @default(cuid())
+  name            String
+  projectId       String?
+  project         Project?       @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  platforms       String         // JSON array of platform keys
+  hashtags        String?        // JSON array
+  linkedinPost    String?
+  twitterThread   String?
+  emailNewsletter String?
+  status          CampaignStatus @default(DRAFT)
+  launchDate      DateTime?
+  notes           String?
+  episodes        Episode[]
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+}
+
+model HashtagSet {
+  id        String    @id @default(cuid())
+  name      String
+  tags      String    // JSON array
+  platform  Platform?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model AnalyticsEntry {
+  id         String   @id @default(cuid())
+  projectId  String?
+  project    Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  platform   Platform
+  views      Int      @default(0)
+  ctr        Float?
+  likes      Int?
+  notes      String?
+  recordedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+}
+
+// ─── /operations — workflows, SOPs ───────────────────────────────────────────
+
+model WorkflowTemplate {
+  id          String            @id @default(cuid())
+  name        String
+  description String?
+  steps       String            // JSON: WorkflowStepDef[]
+  isDefault   Boolean           @default(false)
+  projectWorkflows ProjectWorkflow[]
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+}
+
+model ProjectWorkflow {
+  id           String            @id @default(cuid())
+  projectId    String            @unique
+  project      Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  templateId   String?
+  template     WorkflowTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  currentStep  Int               @default(0)
+  stepProgress String            @default("{}") // JSON: per-step checklist state
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+}
+
+model SopDocument {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  title     String
+  category  String
+  content   String
+  order     Int      @default(0)
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
+
+// ─── /knowledge — docs, help center ──────────────────────────────────────────
+
+model DocPage {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  title     String
+  category  String
+  content   String
+  order     Int      @default(0)
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
+
+// ─── /system — notifications ─────────────────────────────────────────────────
+
+model Notification {
+  id        String   @id @default(cuid())
+  type      String   @default("info") // info, success, warning, action
+  title     String
+  message   String
+  href      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
