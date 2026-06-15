@@ -8,7 +8,7 @@ import {
   updateSlot,
   batchScheduleProjects,
 } from "@/lib/business/calendar";
-import type { Platform, SlotStatus } from "@prisma/client";
+import type { AvailabilityStatus, Platform, SlotStatus } from "@prisma/client";
 
 export async function GET(request: NextRequest) {
   await ensureSeeded();
@@ -69,8 +69,12 @@ export async function POST(request: NextRequest) {
     projectId,
     title,
     scheduledAt,
+    endAt,
     platform,
     status,
+    availability,
+    location,
+    agenda,
     episodeNumber,
     seriesName,
     notes,
@@ -84,8 +88,12 @@ export async function POST(request: NextRequest) {
     projectId,
     title,
     scheduledAt,
+    endAt,
     platform: platform as Platform,
     status: status as SlotStatus | undefined,
+    availability: availability as AvailabilityStatus | undefined,
+    location,
+    agenda,
     episodeNumber,
     seriesName,
     notes,

@@ -282,7 +282,78 @@ model AppSettings {
   defaultScript   String   @default("5min") // 5min, 10min
   autoQueueTrending Int    @default(3) // how many trending to queue on refresh
   healthWatchdog  Boolean  @default(true)
+  lastLeadsScanAt DateTime?
+  leadsBoardUrls  String?  // JSON: { greenhouse?: string[], lever?: string[] }
   updatedAt       DateTime @updatedAt
+}
+
+// ─── /leads — Insider Tracker ────────────────────────────────────────────────
+
+enum LeadSource {
+  HN
+  REMOTEOK
+  GREENHOUSE
+  GITHUB
+  MANUAL
+}
+
+enum LeadStatus {
+  NEW
+  APPLIED
+  ARCHIVED
+}
+
+enum CompanyUpdateType {
+  JOB_POST
+  PRODUCT_LAUNCH
+  FUNDING
+  NEWS
+}
+
+model Company {
+  id            String          @id @default(cuid())
+  name          String
+  website       String?
+  githubOrg     String?
+  industry      String?
+  notes         String?
+  greenhouseSlug String?
+  leverSlug     String?
+  lastCheckedAt DateTime?
+  jobLeads      JobLead[]
+  updates       CompanyUpdate[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@unique([name])
+}
+
+model JobLead {
+  id          String     @id @default(cuid())
+  companyId   String?
+  company     Company?   @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  companyName String?
+  title       String
+  url         String     @unique
+  source      LeadSource
+  location    String?
+  remote      Boolean?
+  postedAt    DateTime?
+  description String?
+  status      LeadStatus @default(NEW)
+  capturedAt  DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model CompanyUpdate {
+  id         String            @id @default(cuid())
+  companyId  String
+  company    Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  type       CompanyUpdateType
+  title      String
+  url        String?
+  summary    String?
+  capturedAt DateTime          @default(now())
 }
 
 // ─── /business — calendar, showtime, content slots ───────────────────────────
@@ -303,19 +374,45 @@ enum SlotStatus {
   SKIPPED
 }
 
+enum AvailabilityStatus {
+  BUSY
+  FREE
+  TENTATIVE
+}
+
+enum QuadrantType {
+  DELEGATE
+  DO_NOW
+  DO_LATER
+  PLAN
+}
+
 model ContentSlot {
-  id            String     @id @default(cuid())
+  id            String              @id @default(cuid())
   projectId     String?
-  project       Project?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  project       Project?            @relation(fields: [projectId], references: [id], onDelete: SetNull)
   title         String
   scheduledAt   DateTime
+  endAt         DateTime?
   platform      Platform
-  status        SlotStatus @default(PLANNED)
+  status        SlotStatus          @default(PLANNED)
+  availability  AvailabilityStatus  @default(BUSY)
+  location      String?
+  agenda        String?
   episodeNumber Int?
   seriesName    String?
   notes         String?
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+}
+
+model QuadrantItem {
+  id        String       @id @default(cuid())
+  quadrant  QuadrantType
+  text      String
+  order     Int          @default(0)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
 }
 
 enum EpisodeStatus {

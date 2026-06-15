@@ -1,12 +1,16 @@
 import { prisma } from "@/lib/db";
-import type { Platform, SlotStatus } from "@prisma/client";
+import type { AvailabilityStatus, Platform, SlotStatus } from "@prisma/client";
 
 export interface SlotInput {
   projectId?: string | null;
   title: string;
   scheduledAt: Date | string;
+  endAt?: Date | string | null;
   platform: Platform;
   status?: SlotStatus;
+  availability?: AvailabilityStatus;
+  location?: string | null;
+  agenda?: string | null;
   episodeNumber?: number | null;
   seriesName?: string | null;
   notes?: string | null;
@@ -116,6 +120,7 @@ export async function createSlot(input: SlotInput) {
     data: {
       ...input,
       scheduledAt: new Date(input.scheduledAt),
+      endAt: input.endAt ? new Date(input.endAt) : undefined,
     },
     include: { project: true },
   });
@@ -127,6 +132,7 @@ export async function updateSlot(id: string, data: Partial<SlotInput>) {
     data: {
       ...data,
       scheduledAt: data.scheduledAt ? new Date(data.scheduledAt) : undefined,
+      endAt: data.endAt === null ? null : data.endAt ? new Date(data.endAt) : undefined,
     },
     include: { project: true },
   });

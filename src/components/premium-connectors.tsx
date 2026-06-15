@@ -22,7 +22,7 @@ interface PremiumConnectorsProps {
 
 const TOOL_META = {
   chatgpt: { label: "ChatGPT", desc: "Copy formatted prompt + repo context" },
-  notebooklm: { label: "NotebookLM", desc: "Download full research document (PDF or .md)" },
+  notebooklm: { label: "NotebookLM", desc: "Copy brief — export PDF from project page" },
   riverside: { label: "Riverside.fm", desc: "Teleprompter + recording checklist" },
   canva: { label: "Canva", desc: "Post-prod notes + thumbnail SVG" },
   youtube: { label: "YouTube", desc: "Full metadata bundle + Studio link" },
@@ -59,9 +59,6 @@ export function PremiumConnectors({
     },
     notebooklm: {
       copy: () => copyText("notebooklm", buildNotebookLMBrief(context)),
-      download: () => {
-        window.location.href = `/api/projects/${projectId}/export?format=research`;
-      },
       open: PREMIUM_LINKS.notebooklm,
     },
     riverside: {

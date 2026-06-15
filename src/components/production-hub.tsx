@@ -9,7 +9,6 @@ import type { ScreenshotRecord } from "@/lib/production/uploads";
 import { PIPELINE_STEPS, RECORDING_CHECKLIST, CANVA_WORKFLOW } from "@/lib/production/constants";
 import { CopyBlock } from "@/components/copy-block";
 import { PremiumConnectors } from "@/components/premium-connectors";
-import { ResearchExportButton } from "@/components/research-export-button";
 import type { ConnectorContext } from "@/lib/connectors";
 import { slidesToMarkdown } from "@/lib/production/slides";
 import { StatusSelect } from "@/components/status-select";
@@ -260,9 +259,9 @@ export function ProductionHub(props: ProductionHubProps) {
   };
 
   const stepConnectors: Record<ProductionStep, ("chatgpt" | "notebooklm" | "riverside" | "canva" | "youtube")[]> = {
-    IMPORT: ["chatgpt", "notebooklm"],
-    SCRIPT: ["chatgpt", "notebooklm"],
-    SLIDES: ["notebooklm", "chatgpt"],
+    IMPORT: ["chatgpt"],
+    SCRIPT: ["chatgpt"],
+    SLIDES: ["chatgpt"],
     REFINE: ["chatgpt", "riverside"],
     RECORD: ["riverside"],
     EDIT: ["canva"],
@@ -271,14 +270,6 @@ export function ProductionHub(props: ProductionHubProps) {
 
   return (
     <div className="space-y-6">
-      <div className="p-4 rounded-xl bg-accent/5 border border-accent/20 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <p className="text-sm font-medium">NotebookLM Research Brief</p>
-          <p className="text-xs text-muted">One PDF with scan results, analysis, hooks, and screenshots.</p>
-        </div>
-        <ResearchExportButton projectId={props.projectId} variant="secondary" className="shrink-0" />
-      </div>
-
       {/* Stepper */}
       <nav className="flex flex-wrap gap-1 p-2 rounded-xl bg-card border border-border">
         {PIPELINE_STEPS.map((s, i) => {

@@ -108,48 +108,39 @@ export function ProjectsPageClient() {
       <Breadcrumbs items={[{ label: "Dashboard", href: "/" }, { label: "Projects" }]} />
       <PageHeader
         title="Projects"
-        description="All repos in your pipeline — batch schedule or remove duplicates"
+        description="Review results, export research PDFs, open Studio to record"
         helpHref="/help"
         actions={
-          <div className="flex gap-2 flex-wrap">
-            {duplicateIds.size > 0 && (
+          selected.size > 0 ? (
+            <div className="flex gap-2 flex-wrap">
               <button
-                onClick={selectDuplicates}
-                className="flex items-center gap-1 px-3 py-2 rounded-lg border border-amber-500/40 text-amber-400 text-sm hover:bg-amber-500/10"
+                onClick={batchSchedule}
+                disabled={batching || deleting}
+                className="flex items-center gap-1 px-3 py-2 rounded-lg border border-border text-sm hover:bg-card-hover disabled:opacity-50"
               >
-                <Copy className="w-4 h-4" />
-                Select duplicates ({duplicateIds.size})
+                {batching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Calendar className="w-4 h-4" />}
+                Schedule {selected.size}
               </button>
-            )}
-            {selected.size > 0 && (
-              <>
-                <button
-                  onClick={batchSchedule}
-                  disabled={batching || deleting}
-                  className="flex items-center gap-1 px-3 py-2 rounded-lg bg-accent text-white text-sm disabled:opacity-50"
-                >
-                  {batching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Calendar className="w-4 h-4" />}
-                  Schedule {selected.size}
-                </button>
-                <button
-                  onClick={deleteSelected}
-                  disabled={batching || deleting}
-                  className="flex items-center gap-1 px-3 py-2 rounded-lg border border-red-500/40 text-red-400 text-sm hover:bg-red-500/10 disabled:opacity-50"
-                >
-                  {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-                  Delete selected
-                </button>
-              </>
-            )}
-          </div>
+              <button
+                onClick={deleteSelected}
+                disabled={batching || deleting}
+                className="flex items-center gap-1 px-3 py-2 rounded-lg border border-red-500/40 text-red-400 text-sm hover:bg-red-500/10 disabled:opacity-50"
+              >
+                {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                Delete {selected.size}
+              </button>
+            </div>
+          ) : duplicateIds.size > 0 ? (
+            <button
+              onClick={selectDuplicates}
+              className="flex items-center gap-1 px-3 py-2 rounded-lg border border-amber-500/30 text-amber-400/90 text-xs hover:bg-amber-500/10"
+            >
+              <Copy className="w-3.5 h-3.5" />
+              Select {duplicateIds.size} duplicates
+            </button>
+          ) : null
         }
       />
-
-      {duplicateIds.size > 0 && (
-        <p className="mb-4 text-xs text-amber-400/90">
-          {duplicateIds.size} duplicate project(s) detected (same URL or name). Select and delete extras.
-        </p>
-      )}
 
       {loading ? (
         <Loader2 className="w-8 h-8 animate-spin text-accent mx-auto" />
@@ -165,49 +156,39 @@ export function ProjectsPageClient() {
             return (
               <div
                 key={p.id}
-                className={`flex items-center gap-3 p-4 rounded-xl bg-card border transition-all ${
-                  isDuplicate ? "border-amber-500/30 hover:border-amber-500/50" : "border-border hover:border-accent/20"
+                className={`flex items-center gap-3 p-3 rounded-xl bg-card border transition-all ${
+                  selected.has(p.id)
+                    ? "border-accent/30"
+                    : isDuplicate
+                      ? "border-amber-500/20 hover:border-amber-500/40"
+                      : "border-border hover:border-accent/20"
                 }`}
               >
                 <input
                   type="checkbox"
                   checked={selected.has(p.id)}
                   onChange={() => toggle(p.id)}
-                  className="rounded accent-accent"
+                  className="rounded accent-accent shrink-0"
                 />
-                <div className="flex-1 min-w-0">
+                <Link href={`/projects/${p.id}`} className="flex-1 min-w-0 group">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <Link href={`/projects/${p.id}`} className="font-semibold hover:text-accent truncate">
-                      {p.name}
-                    </Link>
+                    <span className="font-semibold group-hover:text-accent truncate">{p.name}</span>
                     <StatusBadge status={p.status as ProjectStatus} />
                     {isDuplicate && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30">
-                        Duplicate
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">
+                        dup
                       </span>
                     )}
-                    {tags.map((t) => (
+                    {tags.slice(0, 2).map((t) => (
                       <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-background border border-border flex items-center gap-0.5">
                         <Tag className="w-2.5 h-2.5" />{t}
                       </span>
                     ))}
                   </div>
-                  <p className="text-xs text-muted mt-1 truncate">{p.url}</p>
-                  <p className="text-xs text-muted mt-0.5">
+                  <p className="text-xs text-muted mt-0.5 truncate">
                     {p.workflowStep} · {formatRelative(p.updatedAt)}
-                    {p.scheduledPublishAt && ` · Publish ${new Date(p.scheduledPublishAt).toLocaleDateString()}`}
                   </p>
-                </div>
-                <div className="flex gap-2 shrink-0">
-                  {p.status === "SCRIPT_READY" && (
-                    <Link href={`/studio/${p.id}`} className="text-xs px-3 py-1.5 rounded-lg bg-accent text-white">
-                      Studio
-                    </Link>
-                  )}
-                  <Link href={`/projects/${p.id}`} className="text-xs px-3 py-1.5 rounded-lg border border-border hover:bg-card-hover">
-                    View
-                  </Link>
-                </div>
+                </Link>
               </div>
             );
           })}

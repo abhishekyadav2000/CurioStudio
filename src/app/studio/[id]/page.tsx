@@ -5,11 +5,10 @@ import { AppShell } from "@/components/app-shell";
 import { Teleprompter } from "@/components/teleprompter";
 import { PresentationMode } from "@/components/presentation-mode";
 import { ProductionHub } from "@/components/production-hub";
-import { ResearchExportButton } from "@/components/research-export-button";
 import type { PresentationSlide } from "@/lib/content";
 import { parseScreenshots } from "@/lib/production/uploads";
 import type { ProductionStep } from "@prisma/client";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Mic, Presentation } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -74,19 +73,40 @@ export default async function StudioPage({
       <div className="max-w-5xl mx-auto p-4 lg:p-8">
           <Link
             href={`/projects/${id}`}
-            className="inline-flex items-center gap-2 text-sm text-muted hover:text-accent mb-6"
+            className="inline-flex items-center gap-2 text-sm text-muted hover:text-accent mb-4"
           >
             <ArrowLeft className="w-4 h-4" />
-            Full project details
+            Project details & Research PDF
           </Link>
 
-          <header className="mb-8">
-            <p className="text-accent text-sm font-medium mb-1">Content Production Pipeline</p>
-            <h1 className="text-3xl font-bold mb-2">
-              {project.content?.youtubeTitle ?? project.name ?? "Production Hub"}
+          <header className="mb-6">
+            <h1 className="text-2xl font-bold mb-1">
+              {project.content?.youtubeTitle ?? project.name ?? "Studio"}
             </h1>
-            <p className="text-muted mb-4">{project.content?.hook ?? project.description}</p>
-            <ResearchExportButton projectId={id} projectName={project.name} variant="primary" />
+            <p className="text-sm text-muted mb-4 line-clamp-2">{project.content?.hook ?? project.description}</p>
+            <div className="flex gap-2 flex-wrap">
+              <Link
+                href={`/studio/${id}?mode=teleprompter`}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-accent text-white text-sm hover:bg-accent-dim"
+              >
+                <Mic className="w-4 h-4" />
+                Teleprompter
+              </Link>
+              {slides.length > 0 ? (
+                <Link
+                  href={`/studio/${id}?mode=present`}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-border hover:border-accent/30 text-sm"
+                >
+                  <Presentation className="w-4 h-4" />
+                  Presentation
+                </Link>
+              ) : (
+                <span className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-dashed border-border text-sm text-muted">
+                  <Presentation className="w-4 h-4" />
+                  Generate slides first
+                </span>
+              )}
+            </div>
           </header>
 
           <ProductionHub

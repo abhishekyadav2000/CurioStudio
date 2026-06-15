@@ -10,16 +10,28 @@ import {
   Calendar as CalIcon,
   List,
   LayoutGrid,
+  ChevronDown,
 } from "lucide-react";
 import { Breadcrumbs, PageHeader } from "@/components/page-header";
+import {
+  CalendarEventModal,
+  toDatetimeLocal,
+  type CalendarEventData,
+} from "@/components/calendar-event-modal";
+import { EisenhowerQuadrant } from "@/components/eisenhower-quadrant";
 import { cn } from "@/lib/utils";
 
 interface Slot {
   id: string;
   title: string;
   scheduledAt: string;
+  endAt?: string | null;
   platform: string;
   status: string;
+  availability?: string;
+  location?: string | null;
+  agenda?: string | null;
+  notes?: string | null;
   projectId: string | null;
   project?: { id: string; name: string | null; status: string } | null;
 }
@@ -34,6 +46,43 @@ const STATUS_COLORS: Record<string, string> = {
 
 const PLATFORMS = ["YOUTUBE", "LINKEDIN", "SHORTS", "TWITTER", "BLOG"];
 
+function defaultEventForDate(date: Date): CalendarEventData {
+  const start = new Date(date);
+  start.setHours(9, 0, 0, 0);
+  const end = new Date(start);
+  end.setHours(10, 0, 0, 0);
+  return {
+    title: "",
+    scheduledAt: toDatetimeLocal(start),
+    endAt: toDatetimeLocal(end),
+    location: "",
+    notes: "",
+    agenda: "",
+    availability: "BUSY",
+    platform: "YOUTUBE",
+    status: "PLANNED",
+  };
+}
+
+function slotToEvent(slot: Slot): CalendarEventData {
+  const start = new Date(slot.scheduledAt);
+  const end = slot.endAt
+    ? new Date(slot.endAt)
+    : new Date(start.getTime() + 3600000);
+  return {
+    id: slot.id,
+    title: slot.title,
+    scheduledAt: toDatetimeLocal(start),
+    endAt: toDatetimeLocal(end),
+    location: slot.location ?? "",
+    notes: slot.notes ?? "",
+    agenda: slot.agenda ?? "",
+    availability: (slot.availability as CalendarEventData["availability"]) ?? "BUSY",
+    platform: slot.platform,
+    status: slot.status,
+  };
+}
+
 export function CalendarPageClient() {
   const [slots, setSlots] = useState<Slot[]>([]);
   const [loading, setLoading] = useState(true);
@@ -46,18 +95,62 @@ export function CalendarPageClient() {
     platform: "YOUTUBE",
     status: "PLANNED",
   });
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalMode, setModalMode] = useState<"create" | "edit">("create");
+  const [modalEvent, setModalEvent] = useState<CalendarEventData>(defaultEventForDate(new Date()));
+  const [modalDayEvents, setModalDayEvents] = useState<
+    { id: string; title: string; scheduledAt: string; endAt?: string | null }[]
+  >([]);
+  const [quadrantOpen, setQuadrantOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const res = await fetch("/api/calendar");
+    const from = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
+    const to = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0, 23, 59, 59);
+    const res = await fetch(
+      `/api/calendar?from=${from.toISOString()}&to=${to.toISOString()}`
+    );
     const data = await res.json();
     setSlots(data.slots ?? []);
     setLoading(false);
-  }, []);
+  }, [cursor]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  function openCreateModal(date: Date) {
+    setModalMode("create");
+    setModalEvent(defaultEventForDate(date));
+    setModalDayEvents(
+      slots
+        .filter((s) => new Date(s.scheduledAt).toDateString() === date.toDateString())
+        .map((s) => ({
+          id: s.id,
+          title: s.title,
+          scheduledAt: s.scheduledAt,
+          endAt: s.endAt,
+        }))
+    );
+    setModalOpen(true);
+  }
+
+  function openEditModal(slot: Slot) {
+    const date = new Date(slot.scheduledAt);
+    setModalMode("edit");
+    setModalEvent(slotToEvent(slot));
+    setModalDayEvents(
+      slots
+        .filter((s) => new Date(s.scheduledAt).toDateString() === date.toDateString())
+        .map((s) => ({
+          id: s.id,
+          title: s.title,
+          scheduledAt: s.scheduledAt,
+          endAt: s.endAt,
+        }))
+    );
+    setModalOpen(true);
+  }
 
   async function createSlot(e: React.FormEvent) {
     e.preventDefault();
@@ -68,6 +161,40 @@ export function CalendarPageClient() {
     });
     setShowForm(false);
     setForm({ title: "", scheduledAt: "", platform: "YOUTUBE", status: "PLANNED" });
+    load();
+  }
+
+  async function saveEvent(data: CalendarEventData) {
+    const payload = {
+      title: data.title,
+      scheduledAt: data.scheduledAt,
+      endAt: data.endAt || null,
+      location: data.location || null,
+      notes: data.notes || null,
+      agenda: data.agenda || null,
+      availability: data.availability,
+      platform: data.platform,
+      status: data.status,
+    };
+
+    if (modalMode === "edit" && data.id) {
+      await fetch("/api/calendar", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: data.id, ...payload }),
+      });
+    } else {
+      await fetch("/api/calendar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    }
+    load();
+  }
+
+  async function deleteEvent(id: string) {
+    await fetch(`/api/calendar?id=${encodeURIComponent(id)}`, { method: "DELETE" });
     load();
   }
 
@@ -193,7 +320,11 @@ export function CalendarPageClient() {
             const d = new Date(cursor.getFullYear(), cursor.getMonth(), day);
             const daySlots = slotsByDay[d.toDateString()] ?? [];
             return (
-              <div key={day} className="min-h-[80px] p-1 rounded-lg bg-card border border-border/50">
+              <div
+                key={day}
+                className="min-h-[80px] p-1 rounded-lg bg-card border border-border/50 cursor-pointer hover:border-accent/30 transition-colors"
+                onDoubleClick={() => openCreateModal(d)}
+              >
                 <span className="text-[10px] text-muted">{day}</span>
                 <div className="space-y-0.5 mt-0.5">
                   {daySlots.slice(0, 2).map((s) => (
@@ -201,7 +332,10 @@ export function CalendarPageClient() {
                       key={s.id}
                       className={cn("text-[9px] px-1 py-0.5 rounded border truncate cursor-pointer", STATUS_COLORS[s.status])}
                       title={s.title}
-                      onClick={() => updateStatus(s.id, s.status === "PLANNED" ? "SCHEDULED" : s.status === "SCHEDULED" ? "RECORDED" : "PUBLISHED")}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openEditModal(s);
+                      }}
                     >
                       {s.title}
                     </div>
@@ -217,13 +351,21 @@ export function CalendarPageClient() {
           {weekDays.map((d) => {
             const daySlots = slotsByDay[d.toDateString()] ?? [];
             return (
-              <div key={d.toISOString()} className="p-2 rounded-xl bg-card border border-border min-h-[120px]">
+              <div
+                key={d.toISOString()}
+                className="p-2 rounded-xl bg-card border border-border min-h-[120px] cursor-pointer hover:border-accent/30"
+                onDoubleClick={() => openCreateModal(d)}
+              >
                 <p className="text-xs font-medium mb-2">{d.toLocaleDateString("en-US", { weekday: "short", day: "numeric" })}</p>
                 {daySlots.map((s) => (
-                  <div key={s.id} className={cn("text-xs p-1.5 mb-1 rounded border", STATUS_COLORS[s.status])}>
+                  <div
+                    key={s.id}
+                    className={cn("text-xs p-1.5 mb-1 rounded border cursor-pointer", STATUS_COLORS[s.status])}
+                    onClick={() => openEditModal(s)}
+                  >
                     {s.title}
                     {s.project && (
-                      <Link href={`/studio/${s.project.id}`} className="block text-[10px] underline mt-0.5">Studio →</Link>
+                      <Link href={`/studio/${s.project.id}`} className="block text-[10px] underline mt-0.5" onClick={(e) => e.stopPropagation()}>Studio →</Link>
                     )}
                   </div>
                 ))}
@@ -234,13 +376,21 @@ export function CalendarPageClient() {
       ) : (
         <div className="space-y-2">
           {slots.map((s) => (
-            <div key={s.id} className={cn("flex items-center gap-3 p-3 rounded-xl border", STATUS_COLORS[s.status])}>
+            <div
+              key={s.id}
+              className={cn("flex items-center gap-3 p-3 rounded-xl border cursor-pointer hover:opacity-90", STATUS_COLORS[s.status])}
+              onClick={() => openEditModal(s)}
+            >
               <span className="text-xs text-muted w-28 shrink-0">{new Date(s.scheduledAt).toLocaleString()}</span>
               <span className="text-xs px-1.5 py-0.5 rounded bg-background/50">{s.platform}</span>
               <span className="flex-1 font-medium text-sm">{s.title}</span>
               <select
                 value={s.status}
-                onChange={(e) => updateStatus(s.id, e.target.value)}
+                onChange={(e) => {
+                  e.stopPropagation();
+                  updateStatus(s.id, e.target.value);
+                }}
+                onClick={(e) => e.stopPropagation()}
                 className="bg-background border border-border rounded text-xs px-2 py-1"
               >
                 {Object.keys(STATUS_COLORS).map((st) => (
@@ -248,7 +398,7 @@ export function CalendarPageClient() {
                 ))}
               </select>
               {s.projectId && (
-                <Link href={`/studio/${s.projectId}`} className="text-xs text-accent hover:underline">Studio</Link>
+                <Link href={`/studio/${s.projectId}`} className="text-xs text-accent hover:underline" onClick={(e) => e.stopPropagation()}>Studio</Link>
               )}
             </div>
           ))}
@@ -256,7 +406,35 @@ export function CalendarPageClient() {
         </div>
       )}
 
-      <p className="text-xs text-muted mt-6">Click a slot in month view to advance status: Planned → Scheduled → Recorded → Published</p>
+      <p className="text-xs text-muted mt-4">
+        Double-click a date to create an event. Click a slot to edit.
+      </p>
+
+      <div className="mt-8 border-t border-border pt-4">
+        <button
+          type="button"
+          onClick={() => setQuadrantOpen((o) => !o)}
+          className="w-full flex items-center justify-between text-sm font-semibold hover:text-accent transition-colors"
+        >
+          Urgent vs Important
+          <ChevronDown className={`w-4 h-4 transition-transform ${quadrantOpen ? "rotate-180" : ""}`} />
+        </button>
+        {quadrantOpen && (
+          <div className="mt-4">
+            <EisenhowerQuadrant />
+          </div>
+        )}
+      </div>
+
+      <CalendarEventModal
+        open={modalOpen}
+        mode={modalMode}
+        initial={modalEvent}
+        dayEvents={modalDayEvents}
+        onClose={() => setModalOpen(false)}
+        onSave={saveEvent}
+        onDelete={modalMode === "edit" ? deleteEvent : undefined}
+      />
     </div>
   );
 }

@@ -8,6 +8,7 @@ interface ResearchExportButtonProps {
   projectName?: string | null;
   variant?: "primary" | "secondary" | "compact" | "link";
   className?: string;
+  showMarkdown?: boolean;
 }
 
 const TOOLTIP = RESEARCH_EXPORT_TOOLTIP;
@@ -16,6 +17,7 @@ export function ResearchExportButton({
   projectId,
   variant = "primary",
   className = "",
+  showMarkdown = false,
 }: ResearchExportButtonProps) {
   const href = `/api/projects/${projectId}/research-pdf`;
   const mdHref = `/api/projects/${projectId}/export?format=research`;
@@ -43,7 +45,7 @@ export function ResearchExportButton({
         className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs border border-border hover:bg-card-hover ${className}`}
       >
         <Download className="w-3 h-3" />
-        PDF
+        Export PDF
       </a>
     );
   }
@@ -55,30 +57,25 @@ export function ResearchExportButton({
 
   return (
     <div className={`flex flex-col gap-1 ${className}`}>
-      <div className="flex flex-wrap gap-2">
-        <a
-          href={href}
-          download
-          title={TOOLTIP}
-          className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${base}`}
-        >
-          <FileText className="w-4 h-4" />
-          Export Research PDF
-        </a>
+      <a
+        href={href}
+        download
+        title={TOOLTIP}
+        className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors w-fit ${base}`}
+      >
+        <FileText className="w-4 h-4" />
+        Export Research PDF
+      </a>
+      {showMarkdown && (
         <a
           href={mdHref}
           download
           title="Markdown version for NotebookLM text upload"
-          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm border border-border hover:bg-card-hover"
+          className="text-[10px] text-muted hover:text-accent w-fit"
         >
-          <Download className="w-4 h-4" />
-          .md
+          or download .md
         </a>
-      </div>
-      <p className="text-[10px] text-muted max-w-md" title={TOOLTIP}>
-        NotebookLM brief: summary, metadata, README, security scan, sandbox verdict, hooks, risks, sources, and
-        screenshots.
-      </p>
+      )}
     </div>
   );
 }

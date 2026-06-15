@@ -1,6 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
+import { JobStatus } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { enqueueUrls, processNextJob } from "@/lib/pipeline";
+
+const JOB_STATUSES: JobStatus[] = ["PENDING", "PROCESSING", "COMPLETED", "FAILED"];
+
+async function getCounts() {
+  const [pending, processing, completed, failed] = await Promise.all([
+    prisma.job.count({ where: { status: "PENDING" } }),
+    prisma.job.count({ where: { status: "PROCESSING" } }),
+    prisma.job.count({ where: { status: "COMPLETED" } }),
+    prisma.job.count({ where: { status: "FAILED" } }),
+  ]);
+  return { pending, processing, completed, failed };
+}
 
 export async function GET() {
   const jobs = await prisma.job.findMany({
@@ -8,14 +21,37 @@ export async function GET() {
     take: 50,
   });
 
-  const counts = {
-    pending: jobs.filter((j) => j.status === "PENDING").length,
-    processing: jobs.filter((j) => j.status === "PROCESSING").length,
-    completed: await prisma.job.count({ where: { status: "COMPLETED" } }),
-    failed: await prisma.job.count({ where: { status: "FAILED" } }),
-  };
+  const counts = await getCounts();
 
   return NextResponse.json({ jobs, counts });
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const all = searchParams.get("all") === "true";
+    const status = searchParams.get("status");
+
+    if (all) {
+      const result = await prisma.job.deleteMany({});
+      return NextResponse.json({ deleted: result.count });
+    }
+
+    if (status && JOB_STATUSES.includes(status as JobStatus)) {
+      const result = await prisma.job.deleteMany({
+        where: { status: status as JobStatus },
+      });
+      return NextResponse.json({ deleted: result.count, status });
+    }
+
+    return NextResponse.json(
+      { error: "Provide ?all=true or ?status=PENDING|PROCESSING|COMPLETED|FAILED" },
+      { status: 400 }
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Delete failed";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -42,6 +78,19 @@ export async function POST(request: NextRequest) {
       processed = result.processed;
     }
     return NextResponse.json({ results, total: results.length });
+  }
+
+  if (body.action === "mark-complete") {
+    const ids = body.ids as string[] | undefined;
+    const where = ids?.length
+      ? { id: { in: [...new Set(ids)] }, status: { not: "PROCESSING" as JobStatus } }
+      : { status: { in: ["PENDING", "FAILED"] as JobStatus[] } };
+
+    const result = await prisma.job.updateMany({
+      where,
+      data: { status: "COMPLETED", completedAt: new Date() },
+    });
+    return NextResponse.json({ updated: result.count });
   }
 
   return NextResponse.json({ error: "Provide urls array or action" }, { status: 400 });

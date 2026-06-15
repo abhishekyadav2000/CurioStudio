@@ -23,19 +23,20 @@ import {
   ChevronDown,
   Menu,
   X,
+  Radar,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SearchTrigger, GlobalSearch } from "@/components/global-search";
 import { NotificationsCenter } from "@/components/notifications-center";
 import { Tooltip, TooltipProvider } from "@/components/ui/tooltip";
 
-const STORAGE_KEY = "reposafe-sidebar-collapsed";
-const GROUPS_KEY = "reposafe-sidebar-groups";
-const COLLAPSED_WIDTH = "w-16"; // 64px
+const STORAGE_KEY = "curiostudio-sidebar-collapsed";
+const GROUPS_KEY = "curiostudio-sidebar-groups";
+const COLLAPSED_WIDTH = "w-16";
 
 type NavItem = { href: string; icon: React.ComponentType<{ className?: string }>; label: string; abbr: string };
 
-const NAV_GROUPS: { id: string; label: string; items: NavItem[] }[] = [
+const NAV_GROUPS: { id: string; label: string; defaultCollapsed?: boolean; items: NavItem[] }[] = [
   {
     id: "today",
     label: "TODAY",
@@ -58,6 +59,7 @@ const NAV_GROUPS: { id: string; label: string; items: NavItem[] }[] = [
     id: "grow",
     label: "GROW",
     items: [
+      { href: "/leads", icon: Radar, label: "Insider Tracker", abbr: "Leads" },
       { href: "/marketing", icon: Megaphone, label: "Marketing", abbr: "Mktg" },
       { href: "/analytics", icon: BarChart3, label: "Analytics", abbr: "Stats" },
     ],
@@ -65,6 +67,7 @@ const NAV_GROUPS: { id: string; label: string; items: NavItem[] }[] = [
   {
     id: "operate",
     label: "OPERATE",
+    defaultCollapsed: true,
     items: [
       { href: "/workflows", icon: GitBranch, label: "Workflows", abbr: "Flow" },
       { href: "/processes", icon: FileCheck, label: "Processes", abbr: "SOP" },
@@ -73,14 +76,16 @@ const NAV_GROUPS: { id: string; label: string; items: NavItem[] }[] = [
   {
     id: "learn",
     label: "LEARN",
+    defaultCollapsed: true,
     items: [
-      { href: "/help", icon: HelpCircle, label: "Help Center", abbr: "Help" },
+      { href: "/help", icon: HelpCircle, label: "Help", abbr: "Help" },
       { href: "/docs", icon: BookOpen, label: "Docs", abbr: "Docs" },
     ],
   },
   {
     id: "system",
     label: "SYSTEM",
+    defaultCollapsed: true,
     items: [{ href: "/settings", icon: Settings, label: "Settings", abbr: "Set" }],
   },
 ];
@@ -115,11 +120,11 @@ function NavLink({
       className={cn(
         "flex rounded-lg text-sm transition-colors w-full",
         collapsed
-          ? "flex-col items-center justify-center min-h-[52px] px-1 py-2 gap-0.5"
-          : "flex-row items-center justify-start gap-2.5 px-3 py-2.5",
+          ? "flex-col items-center justify-center min-h-[48px] px-1 py-1.5 gap-0.5"
+          : "flex-row items-center gap-2.5 px-2.5 py-2",
         active
-          ? "bg-accent/10 text-accent border border-accent/20"
-          : "text-muted hover:text-foreground hover:bg-card-hover border border-transparent"
+          ? "bg-accent/10 text-accent"
+          : "text-muted hover:text-foreground hover:bg-card-hover"
       )}
     >
       <Icon className={cn("shrink-0", collapsed ? "w-5 h-5" : "w-4 h-4")} />
@@ -153,7 +158,15 @@ export function Sidebar() {
     if (stored === "true") setCollapsed(true);
     try {
       const g = localStorage.getItem(GROUPS_KEY);
-      if (g) setCollapsedGroups(JSON.parse(g));
+      if (g) {
+        setCollapsedGroups(JSON.parse(g));
+      } else {
+        const defaults: Record<string, boolean> = {};
+        for (const group of NAV_GROUPS) {
+          if (group.defaultCollapsed) defaults[group.id] = true;
+        }
+        setCollapsedGroups(defaults);
+      }
     } catch {
       /* ignore */
     }
@@ -183,23 +196,16 @@ export function Sidebar() {
 
   const sidebarContent = (
     <>
-      {/* Expand / collapse header */}
-      <div
-        className={cn(
-          "shrink-0 border-b border-border",
-          collapsed ? "border-b-accent/30 bg-accent/5" : ""
-        )}
-      >
+      <div className="shrink-0 border-b border-border">
         {collapsed ? (
           <button
             type="button"
             onClick={expandSidebar}
-            className="w-full flex flex-col items-center justify-center gap-1 py-3 px-2 border-b-2 border-accent/50 hover:bg-accent/10 transition-colors"
+            className="w-full flex flex-col items-center justify-center gap-0.5 py-2.5 hover:bg-card-hover transition-colors"
             title="Expand sidebar"
             aria-label="Expand sidebar"
           >
             <PanelLeftOpen className="w-5 h-5 text-accent" />
-            <span className="text-[10px] font-semibold text-accent tracking-wide">Expand</span>
           </button>
         ) : null}
 
@@ -213,8 +219,8 @@ export function Sidebar() {
             <Image
               src="/logo.png"
               alt="CurioStudio"
-              width={36}
-              height={36}
+              width={32}
+              height={32}
               className="shrink-0 rounded-lg"
             />
             {!collapsed && (
@@ -228,28 +234,28 @@ export function Sidebar() {
             <button
               type="button"
               onClick={toggleCollapsed}
-              className="ml-auto p-2 rounded-lg hover:bg-card-hover text-muted hidden lg:flex items-center justify-center"
+              className="ml-auto p-1.5 rounded-lg hover:bg-card-hover text-muted hidden lg:flex items-center justify-center"
               title="Collapse sidebar"
               aria-label="Collapse sidebar"
             >
-              <ChevronLeft className="w-5 h-5" />
+              <ChevronLeft className="w-4 h-4" />
             </button>
           )}
         </div>
       </div>
 
-      <div className={cn("shrink-0", collapsed ? "px-2 py-2" : "p-2")}>
+      <div className={cn("shrink-0", collapsed ? "px-2 py-1.5" : "px-2 py-1")}>
         <SearchTrigger collapsed={collapsed} />
       </div>
 
-      <nav className="flex-1 overflow-y-auto scrollbar-thin px-2 py-1 space-y-2">
+      <nav className="flex-1 overflow-y-auto scrollbar-thin px-2 py-1 space-y-1">
         {NAV_GROUPS.map((group) => (
           <div key={group.id}>
             {!collapsed && (
               <button
                 type="button"
                 onClick={() => toggleGroup(group.id)}
-                className="w-full flex items-center justify-between px-2 py-1 text-[10px] font-semibold text-muted tracking-wider hover:text-foreground"
+                className="w-full flex items-center justify-between px-2 py-1 text-[10px] font-semibold text-muted/80 tracking-wider hover:text-foreground"
               >
                 {group.label}
                 <ChevronDown
@@ -258,7 +264,7 @@ export function Sidebar() {
               </button>
             )}
             {(!collapsedGroups[group.id] || collapsed) && (
-              <div className={cn(collapsed ? "space-y-1" : "space-y-0.5")}>
+              <div className={cn(collapsed ? "space-y-0.5" : "space-y-0.5")}>
                 {group.items.map(({ href, icon, label, abbr }) => (
                   <NavLink
                     key={href}
@@ -280,7 +286,7 @@ export function Sidebar() {
       <div
         className={cn(
           "shrink-0 border-t border-border flex items-center",
-          collapsed ? "flex-col justify-center gap-1 p-2" : "gap-2 p-2"
+          collapsed ? "justify-center p-2" : "p-2"
         )}
       >
         <NotificationsCenter collapsed={collapsed} />
@@ -303,30 +309,17 @@ export function Sidebar() {
 
       <aside
         className={cn(
-          "hidden lg:flex shrink-0 bg-card/50 flex-col h-screen sticky top-0 transition-all duration-200 relative",
-          collapsed ? `${COLLAPSED_WIDTH} border-r-2 border-r-accent/40` : "w-60 border-r border-border"
+          "hidden lg:flex shrink-0 bg-card/50 flex-col h-screen sticky top-0 transition-all duration-200",
+          collapsed ? `${COLLAPSED_WIDTH} border-r border-border` : "w-56 border-r border-border"
         )}
       >
         {sidebarContent}
-
-        {collapsed && (
-          <button
-            type="button"
-            onClick={expandSidebar}
-            className="absolute inset-y-0 -right-1 w-3 cursor-ew-resize bg-transparent hover:bg-accent/25 transition-colors z-10 group"
-            title="Expand sidebar"
-            aria-label="Expand sidebar — click edge"
-          >
-            <span className="sr-only">Expand sidebar</span>
-            <span className="absolute top-1/2 -translate-y-1/2 right-0.5 w-0.5 h-8 rounded-full bg-accent/40 group-hover:bg-accent group-hover:h-12 transition-all" />
-          </button>
-        )}
       </aside>
 
       {mobileOpen && (
         <div className="lg:hidden fixed inset-0 z-50 flex">
           <div className="absolute inset-0 bg-black/60" onClick={() => setMobileOpen(false)} />
-          <aside className="relative w-60 bg-card border-r border-border flex flex-col h-full animate-slide-up">
+          <aside className="relative w-56 bg-card border-r border-border flex flex-col h-full animate-slide-up">
             <button
               type="button"
               className="absolute top-3 right-3 p-1 rounded hover:bg-card-hover"

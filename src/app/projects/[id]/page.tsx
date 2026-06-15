@@ -104,7 +104,7 @@ export default async function ProjectPage({
                   <ScoreRing score={project.scorecard.overallScore} size={64} />
                 )}
                 {(project.scan || project.scorecard) && (
-                  <ResearchExportButton projectId={project.id} projectName={project.name} />
+                  <ResearchExportButton projectId={project.id} showMarkdown />
                 )}
                 {project.content && (
                   <Link
