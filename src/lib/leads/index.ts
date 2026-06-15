@@ -4,26 +4,87 @@ import { fetchHackerNewsLeads } from "./hackernews";
 import { fetchRemoteOKLeads } from "./remoteok";
 import { fetchGitHubSearchLeads, fetchGitHubOrgLeads } from "./github";
 import { fetchATSLeads } from "./ats";
-import { fetchFortuneCareers, FORTUNE_COMPANIES, fortuneCompanyToMeta } from "./fortune-careers";
+import {
+  fetchFortuneCareers,
+  FORTUNE_COMPANIES,
+  fortuneCompanyToMeta,
+  FORTUNE_COMPANY_NAMES,
+} from "./fortune-careers";
 import { fetchWellfoundLeads } from "./wellfound";
 import { fetchWWRLeads } from "./wwr";
 import { fetchBuiltInLeads } from "./builtin";
 import { fetchIndeedLeads } from "./indeed";
 import { fetchLinkedInLeads } from "./linkedin";
 import { enrichCompany } from "./enrich";
+import { pruneStaleLeads } from "./prune";
+import {
+  applySourceCap,
+  normalizeDedupeKey,
+  validateAndSanitizeLead,
+} from "./quality";
+import { parsePreferences, scoreLead, type JobPreferences } from "./scoring";
 import type { RawLead } from "./types";
 import type { CompanyMeta } from "./types";
 
 export type { RawLead } from "./types";
+export type { JobPreferences } from "./scoring";
 export { fetchHackerNewsLeads } from "./hackernews";
 export { fetchRemoteOKLeads } from "./remoteok";
 export { fetchGitHubSearchLeads, fetchGitHubOrgLeads } from "./github";
 export { fetchGreenhouseBoard, fetchLeverBoard, fetchATSLeads } from "./ats";
-export { fetchFortuneCareers, FORTUNE_COMPANIES, getFortuneCompanyCount } from "./fortune-careers";
+export { fetchFortuneCareers, FORTUNE_COMPANIES, getFortuneCompanyCount, FORTUNE_COMPANY_NAMES } from "./fortune-careers";
 export { enrichCompany, enrichAllCompanies } from "./enrich";
 export { findContacts, parseJobRequirements } from "./contacts";
 export { researchLead } from "./research";
 export { generateOutreachDraft } from "./outreach";
+export { parsePreferences, scoreLead, DEFAULT_PREFERENCES, ROLE_PRESETS } from "./scoring";
+export { pruneStaleLeads } from "./prune";
+
+export interface ScanSettings {
+  leadsAutoScanIntervalMinutes: number;
+  leadsMaxAgeDays: number;
+  leadsAutoScanEnabled: boolean;
+  lastLeadsScanAt: Date | null;
+}
+
+export async function getScanSettings(): Promise<ScanSettings> {
+  const settings = await prisma.appSettings.findUnique({ where: { id: "default" } });
+  return {
+    leadsAutoScanIntervalMinutes: settings?.leadsAutoScanIntervalMinutes ?? 5,
+    leadsMaxAgeDays: settings?.leadsMaxAgeDays ?? 45,
+    leadsAutoScanEnabled: settings?.leadsAutoScanEnabled ?? true,
+    lastLeadsScanAt: settings?.lastLeadsScanAt ?? null,
+  };
+}
+
+export async function getJobPreferences(): Promise<JobPreferences> {
+  const settings = await prisma.appSettings.findUnique({ where: { id: "default" } });
+  return parsePreferences(settings?.jobPreferences);
+}
+
+export async function saveJobPreferences(prefs: JobPreferences): Promise<void> {
+  await prisma.appSettings.upsert({
+    where: { id: "default" },
+    create: { id: "default", jobPreferences: JSON.stringify({ ...prefs, preferencesSet: true }) },
+    update: { jobPreferences: JSON.stringify({ ...prefs, preferencesSet: true }) },
+  });
+}
+
+export async function rescoreAllOpenLeads(preferences?: JobPreferences): Promise<number> {
+  const prefs = preferences ?? (await getJobPreferences());
+  const leads = await prisma.jobLead.findMany({
+    where: { status: { in: ["NEW", "RESEARCHING", "READY_OUTREACH"] } },
+  });
+  let updated = 0;
+  for (const lead of leads) {
+    const relevanceScore = scoreLead(lead, prefs);
+    if (relevanceScore !== lead.relevanceScore) {
+      await prisma.jobLead.update({ where: { id: lead.id }, data: { relevanceScore } });
+      updated++;
+    }
+  }
+  return updated;
+}
 
 async function upsertCompanyFromLead(name: string, meta?: CompanyMeta): Promise<string> {
   const trimmed = name.trim();
@@ -62,7 +123,7 @@ export async function ensureFortuneCompanies(): Promise<number> {
 }
 
 /** Fetch from all sources in parallel; failures are logged, not thrown. */
-export async function fetchAllRawLeads(): Promise<{ leads: RawLead[]; errors: string[] }> {
+export async function fetchAllRawLeads(maxAgeDays = 45): Promise<{ leads: RawLead[]; errors: string[] }> {
   await ensureFortuneCompanies();
 
   const companies = await prisma.company.findMany({
@@ -81,7 +142,7 @@ export async function fetchAllRawLeads(): Promise<{ leads: RawLead[]; errors: st
     .map((c) => ({ name: c.name, githubOrg: c.githubOrg! }));
 
   const fetchers: { name: string; fn: () => Promise<RawLead[]> }[] = [
-    { name: "Fortune Careers", fn: fetchFortuneCareers },
+    { name: "Fortune Careers", fn: () => fetchFortuneCareers(maxAgeDays) },
     { name: "Hacker News", fn: fetchHackerNewsLeads },
     { name: "RemoteOK", fn: fetchRemoteOKLeads },
     { name: "We Work Remotely", fn: fetchWWRLeads },
@@ -109,13 +170,21 @@ export async function fetchAllRawLeads(): Promise<{ leads: RawLead[]; errors: st
     }
   }
 
+  const { kept, capped } = applySourceCap(all);
+
   const seen = new Set<string>();
-  const leads = all.filter((lead) => {
-    const key = lead.url.toLowerCase().trim();
-    if (seen.has(key)) return false;
-    seen.add(key);
+  const leads = kept.filter((lead) => {
+    const urlKey = lead.url.toLowerCase().trim();
+    const dedupeKey = normalizeDedupeKey(lead.companyName, lead.title);
+    if (seen.has(urlKey) || seen.has(dedupeKey)) return false;
+    seen.add(urlKey);
+    seen.add(dedupeKey);
     return true;
   });
+
+  if (capped > 0) {
+    console.log(`[leads] Capped ${capped} excess leads per source limits`);
+  }
 
   return { leads, errors };
 }
@@ -123,57 +192,109 @@ export async function fetchAllRawLeads(): Promise<{ leads: RawLead[]; errors: st
 export interface ScanResult {
   added: number;
   skipped: number;
+  rejected: number;
+  pruned: number;
+  rescored: number;
   total: number;
   bySource: Record<string, number>;
   lastScanAt: Date;
   errors: string[];
   fortuneCompaniesTracked: number;
+  message: string;
 }
 
-/** Pull latest leads from all sources, dedupe by URL, store new ones as NEW. */
+/** Pull latest leads, apply quality gates, prune stale, score relevance. */
 export async function fetchAllLeads(): Promise<ScanResult> {
-  const { leads: raw, errors } = await fetchAllRawLeads();
+  const settings = await getScanSettings();
+  const preferences = await getJobPreferences();
+  const maxAgeDays = settings.leadsMaxAgeDays;
+
+  const { leads: raw, errors } = await fetchAllRawLeads(maxAgeDays);
   const bySource: Record<string, number> = {};
   let added = 0;
   let skipped = 0;
-  const newCompanyIds = new Set<string>();
+  let rejected = 0;
 
   for (const lead of raw) {
     bySource[lead.source] = (bySource[lead.source] ?? 0) + 1;
 
-    const existing = await prisma.jobLead.findUnique({ where: { url: lead.url } });
-    if (existing) {
+    const sanitized = validateAndSanitizeLead(lead, maxAgeDays);
+    if (!sanitized) {
+      rejected++;
+      continue;
+    }
+
+    const normalizedKey = normalizeDedupeKey(sanitized.companyName, sanitized.title);
+
+    const existingByUrl = await prisma.jobLead.findUnique({ where: { url: sanitized.url } });
+    if (existingByUrl) {
+      skipped++;
+      continue;
+    }
+
+    const existingByKey = await prisma.jobLead.findFirst({
+      where: { normalizedKey, status: { not: "ARCHIVED" } },
+    });
+    if (existingByKey) {
       skipped++;
       continue;
     }
 
     let companyId: string | null = null;
-    if (lead.companyName) {
-      companyId = await upsertCompanyFromLead(lead.companyName, lead.companyMeta);
-      if (lead.companyMeta?.careersUrl) newCompanyIds.add(companyId);
+    if (sanitized.companyName) {
+      companyId = await upsertCompanyFromLead(sanitized.companyName, sanitized.companyMeta);
     }
+
+    const isFortune100 = sanitized.companyName
+      ? FORTUNE_COMPANY_NAMES.has(sanitized.companyName)
+      : false;
+
+    const relevanceScore = scoreLead(
+      {
+        title: sanitized.title,
+        description: sanitized.description ?? null,
+        companyName: sanitized.companyName ?? null,
+        location: sanitized.location ?? null,
+        remote: sanitized.remote ?? null,
+        postedAt: sanitized.postedAt ?? null,
+        capturedAt: new Date(),
+        isFortune100,
+      },
+      preferences
+    );
 
     await prisma.jobLead.create({
       data: {
-        title: lead.title,
-        url: lead.url,
-        source: lead.source,
+        title: sanitized.title,
+        url: sanitized.url,
+        normalizedKey,
+        source: sanitized.source,
         companyId,
-        companyName: lead.companyName,
-        location: lead.location,
-        remote: lead.remote,
-        postedAt: lead.postedAt,
-        description: lead.description,
+        companyName: sanitized.companyName,
+        location: sanitized.location,
+        remote: sanitized.remote,
+        postedAt: sanitized.postedAt,
+        description: sanitized.description,
+        relevanceScore,
+        isFortune100,
         status: "NEW",
       },
     });
     added++;
   }
 
+  const pruneResult = await pruneStaleLeads(maxAgeDays);
+  const rescored = await rescoreAllOpenLeads(preferences);
+
   const lastScanAt = new Date();
   await prisma.appSettings.upsert({
     where: { id: "default" },
-    create: { id: "default", lastLeadsScanAt: lastScanAt },
+    create: {
+      id: "default",
+      lastLeadsScanAt: lastScanAt,
+      leadsAutoScanIntervalMinutes: 5,
+      leadsMaxAgeDays: maxAgeDays,
+    },
     update: { lastLeadsScanAt: lastScanAt },
   });
 
@@ -184,7 +305,6 @@ export async function fetchAllLeads(): Promise<ScanResult> {
     });
   }
 
-  // Enrich up to 5 Fortune companies that lack enrichment (contact discovery)
   const toEnrich = await prisma.company.findMany({
     where: { careersUrl: { not: null }, lastEnrichedAt: null },
     take: 5,
@@ -197,14 +317,20 @@ export async function fetchAllLeads(): Promise<ScanResult> {
     }
   }
 
+  const message = `Added ${added} fresh · Pruned ${pruneResult.archived} stale · Skipped ${skipped + rejected} low-quality`;
+
   return {
     added,
     skipped,
+    rejected,
+    pruned: pruneResult.archived,
+    rescored,
     total: raw.length,
     bySource,
     lastScanAt,
     errors,
     fortuneCompaniesTracked: FORTUNE_COMPANIES.length,
+    message,
   };
 }
 

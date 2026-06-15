@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { findContacts } from "./contacts";
 import {
   extractEmails,
   extractMeta,
@@ -274,6 +275,14 @@ export async function enrichCompany(companyId: string): Promise<EnrichResult> {
   }
 
   await prisma.company.update({ where: { id: companyId }, data: updateData });
+
+  // Auto-find contacts from job postings and web
+  try {
+    const contactResult = await findContacts(companyId);
+    contactsAdded += contactResult.added;
+  } catch (err) {
+    console.error(`[enrich] findContacts for ${company.name}:`, err);
+  }
 
   return { companyId, contactsAdded, intelAdded, fieldsUpdated };
 }

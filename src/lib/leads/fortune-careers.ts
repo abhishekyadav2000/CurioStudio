@@ -122,6 +122,19 @@ export const FORTUNE_COMPANIES: FortuneCompany[] = [
   { name: "1Password", careersUrl: "https://1password.com/careers/", atsType: "greenhouse", atsSlug: "1password", githubOrg: "1Password", linkedinSearchUrl: "https://www.linkedin.com/jobs/search/?keywords=1Password&location=United%20States", website: "https://1password.com" },
 ];
 
+/** Top 100 companies for focused scanning. */
+export const TOP_FORTUNE_COMPANIES = FORTUNE_COMPANIES.slice(0, 100);
+
+export const FORTUNE_COMPANY_NAMES = new Set(FORTUNE_COMPANIES.map((c) => c.name));
+
+export const MAX_JOBS_PER_COMPANY = 50;
+
+export function isJobFresh(postedAt: Date | undefined, maxAgeDays: number): boolean {
+  if (!postedAt) return true; // unknown date — allow but score lower
+  const ageMs = Date.now() - postedAt.getTime();
+  return ageMs <= maxAgeDays * 24 * 60 * 60 * 1000;
+}
+
 export function fortuneCompanyToMeta(co: FortuneCompany): CompanyMeta {
   return {
     careersUrl: co.careersUrl,
@@ -170,57 +183,57 @@ export function parseCustomCareersPage(html: string, baseUrl: string, companyNam
       companyName,
       description: undefined,
     });
-    if (leads.length >= 25) break;
+    if (leads.length >= MAX_JOBS_PER_COMPANY) break;
   }
 
   return leads;
 }
 
-async function fetchCompanyJobs(co: FortuneCompany): Promise<RawLead[]> {
+async function fetchCompanyJobs(co: FortuneCompany, maxAgeDays: number): Promise<RawLead[]> {
   const meta = fortuneCompanyToMeta(co);
+  let jobs: RawLead[] = [];
 
   if (co.atsType === "greenhouse" && co.atsSlug) {
-    const jobs = await fetchGreenhouseBoard(co.atsSlug, co.name);
-    return jobs.map((j) => ({ ...j, source: "FORTUNE_CAREERS" as const, companyMeta: meta }));
-  }
-
-  if (co.atsType === "lever" && co.atsSlug) {
-    const jobs = await fetchLeverBoard(co.atsSlug, co.name);
-    return jobs.map((j) => ({ ...j, source: "FORTUNE_CAREERS" as const, companyMeta: meta }));
-  }
-
-  if (co.atsType === "ashby" && co.atsSlug) {
-    const jobs = await fetchAshbyBoard(co.atsSlug, co.name);
-    return jobs.map((j) => ({ ...j, source: "FORTUNE_CAREERS" as const, companyMeta: meta }));
-  }
-
-  const html = await fetchPage(co.careersUrl);
-  if (!html) {
-    if (co.linkedinSearchUrl) {
-      return [{
-        title: `${co.name} — search openings on LinkedIn`,
-        url: co.linkedinSearchUrl,
-        source: "LINKEDIN",
-        companyName: co.name,
-        companyMeta: meta,
-        description: `Careers page unavailable — use LinkedIn search for ${co.name} openings.`,
-      }];
+    const raw = await fetchGreenhouseBoard(co.atsSlug, co.name);
+    jobs = raw.map((j) => ({ ...j, source: "FORTUNE_CAREERS" as const, companyMeta: meta }));
+  } else if (co.atsType === "lever" && co.atsSlug) {
+    const raw = await fetchLeverBoard(co.atsSlug, co.name);
+    jobs = raw.map((j) => ({ ...j, source: "FORTUNE_CAREERS" as const, companyMeta: meta }));
+  } else if (co.atsType === "ashby" && co.atsSlug) {
+    const raw = await fetchAshbyBoard(co.atsSlug, co.name);
+    jobs = raw.map((j) => ({ ...j, source: "FORTUNE_CAREERS" as const, companyMeta: meta }));
+  } else {
+    const html = await fetchPage(co.careersUrl);
+    if (!html) {
+      if (co.linkedinSearchUrl) {
+        return [{
+          title: `${co.name} — search openings on LinkedIn`,
+          url: co.linkedinSearchUrl,
+          source: "LINKEDIN",
+          companyName: co.name,
+          companyMeta: meta,
+          description: `Careers page unavailable — use LinkedIn search for ${co.name} openings.`,
+        }];
+      }
+      return [];
     }
-    return [];
+    const parsed = parseCustomCareersPage(html, co.careersUrl, co.name);
+    jobs = parsed.map((j) => ({ ...j, companyMeta: meta }));
   }
 
-  const parsed = parseCustomCareersPage(html, co.careersUrl, co.name);
-  return parsed.map((j) => ({ ...j, companyMeta: meta }));
+  return jobs
+    .filter((j) => isJobFresh(j.postedAt, maxAgeDays))
+    .slice(0, MAX_JOBS_PER_COMPANY);
 }
 
-/** Fetch jobs from all curated Fortune/top-tech career pages. */
-export async function fetchFortuneCareers(): Promise<RawLead[]> {
+/** Fetch jobs from top 100 curated Fortune/top-tech career pages. */
+export async function fetchFortuneCareers(maxAgeDays = 45): Promise<RawLead[]> {
   const all: RawLead[] = [];
   const batchSize = 8;
 
-  for (let i = 0; i < FORTUNE_COMPANIES.length; i += batchSize) {
-    const batch = FORTUNE_COMPANIES.slice(i, i + batchSize);
-    const results = await Promise.allSettled(batch.map((co) => fetchCompanyJobs(co)));
+  for (let i = 0; i < TOP_FORTUNE_COMPANIES.length; i += batchSize) {
+    const batch = TOP_FORTUNE_COMPANIES.slice(i, i + batchSize);
+    const results = await Promise.allSettled(batch.map((co) => fetchCompanyJobs(co, maxAgeDays)));
     for (const r of results) {
       if (r.status === "fulfilled") all.push(...r.value);
     }

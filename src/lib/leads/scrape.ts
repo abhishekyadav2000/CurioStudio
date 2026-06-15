@@ -1,9 +1,12 @@
+import { isAllowedUrl } from "./quality";
+
 const FETCH_HEADERS: HeadersInit = {
   Accept: "text/html,application/xhtml+xml",
   "User-Agent": "CurioStudio/1.0 (lead intelligence)",
 };
 
 export async function fetchPage(url: string, timeoutMs = 15000): Promise<string | null> {
+  if (!isAllowedUrl(url)) return null;
   try {
     const res = await fetch(url, {
       cache: "no-store",

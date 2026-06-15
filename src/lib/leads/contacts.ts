@@ -1,15 +1,93 @@
 import { prisma } from "@/lib/db";
-import { extractPeople, fetchPage, stripHtml } from "./scrape";
+import { extractEmails, extractPeople, fetchPage, stripHtml } from "./scrape";
 
 const RECRUITER_PATTERNS = [
-  /(?:recruiter|talent|hiring manager|hr|people ops)[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/gi,
+  /(?:recruiter|talent acquisition|hiring manager|hr|people ops|talent partner)[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/gi,
   /contact[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/gi,
-  /(?:reach out to|email)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/gi,
+  /(?:reach out to|email|questions\?)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/gi,
+  /(?:reporting to|manager)[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/gi,
 ];
+
+const RECRUITER_TITLE_PATTERN = /(?:recruiter|talent|hiring|hr|people)/i;
 
 export interface FindContactsResult {
   added: number;
   total: number;
+}
+
+async function upsertJobContact(
+  companyId: string,
+  data: {
+    name: string;
+    title?: string;
+    email?: string;
+    source: string;
+    confidence: "HIGH" | "MEDIUM" | "LOW";
+  }
+): Promise<boolean> {
+  const existing = await prisma.contact.findFirst({
+    where: {
+      companyId,
+      OR: [
+        data.email ? { email: data.email } : { name: data.name, title: data.title ?? null },
+      ],
+    },
+  });
+  if (existing) return false;
+  await prisma.contact.create({ data: { companyId, ...data } });
+  return true;
+}
+
+/** Parse contacts from job posting descriptions (emails, recruiter names). */
+export async function extractContactsFromJobPostings(companyId: string): Promise<number> {
+  const jobs = await prisma.jobLead.findMany({
+    where: { companyId, status: { not: "ARCHIVED" } },
+    orderBy: { capturedAt: "desc" },
+    take: 20,
+  });
+
+  let added = 0;
+
+  for (const job of jobs) {
+    const text = job.description ?? "";
+    if (!text) continue;
+
+    for (const email of extractEmails(text)) {
+      const isRecruiter = /recruit|talent|hr|hiring|careers|jobs/i.test(email);
+      if (
+        await upsertJobContact(companyId, {
+          name: email.split("@")[0].replace(/[._]/g, " "),
+          email,
+          title: isRecruiter ? "Recruiter (from posting)" : "Contact (from posting)",
+          source: `job_posting:${job.id}`,
+          confidence: isRecruiter ? "HIGH" : "MEDIUM",
+        })
+      ) {
+        added++;
+      }
+    }
+
+    for (const pattern of RECRUITER_PATTERNS) {
+      pattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(text)) !== null) {
+        const name = match[1].trim();
+        if (name.length < 4) continue;
+        if (
+          await upsertJobContact(companyId, {
+            name,
+            title: "Mentioned in job posting",
+            source: `job_posting:${job.id}`,
+            confidence: "MEDIUM",
+          })
+        ) {
+          added++;
+        }
+      }
+    }
+  }
+
+  return added;
 }
 
 export async function findContacts(companyId: string): Promise<FindContactsResult> {
@@ -20,6 +98,7 @@ export async function findContacts(companyId: string): Promise<FindContactsResul
   if (!company) throw new Error("Company not found");
 
   let added = 0;
+  added += await extractContactsFromJobPostings(companyId);
 
   for (const job of company.jobLeads) {
     const text = job.description ?? "";
@@ -28,18 +107,9 @@ export async function findContacts(companyId: string): Promise<FindContactsResul
       let match: RegExpExecArray | null;
       while ((match = pattern.exec(text)) !== null) {
         const name = match[1].trim();
-        const existing = await prisma.contact.findFirst({ where: { companyId, name } });
-        if (existing) continue;
-        await prisma.contact.create({
-          data: {
-            companyId,
-            name,
-            title: "Mentioned in job posting",
-            source: `job_posting:${job.id}`,
-            confidence: "MEDIUM",
-          },
-        });
-        added++;
+        if (await upsertJobContact(companyId, { name, title: "Mentioned in job posting", source: `job_posting:${job.id}`, confidence: "MEDIUM" })) {
+          added++;
+        }
       }
     }
   }
@@ -51,20 +121,11 @@ export async function findContacts(companyId: string): Promise<FindContactsResul
       const html = await fetchPage(url);
       if (!html) continue;
       for (const person of extractPeople(html)) {
-        const existing = await prisma.contact.findFirst({
-          where: { companyId, name: person.name },
-        });
-        if (existing) continue;
-        await prisma.contact.create({
-          data: {
-            companyId,
-            name: person.name,
-            title: person.title,
-            source: `scrape:${url}`,
-            confidence: "MEDIUM",
-          },
-        });
-        added++;
+        const title = person.title ?? "";
+        const confidence = RECRUITER_TITLE_PATTERN.test(title) ? "HIGH" as const : "MEDIUM" as const;
+        if (await upsertJobContact(companyId, { ...person, source: `scrape:${url}`, confidence })) {
+          added++;
+        }
       }
     }
   }
@@ -81,18 +142,9 @@ export async function findContacts(companyId: string): Promise<FindContactsResul
     if (res.ok) {
       const members = (await res.json()) as { login: string }[];
       for (const m of members) {
-        const existing = await prisma.contact.findFirst({ where: { companyId, name: m.login } });
-        if (existing) continue;
-        await prisma.contact.create({
-          data: {
-            companyId,
-            name: m.login,
-            title: "GitHub org member",
-            source: "github_org",
-            confidence: "LOW",
-          },
-        });
-        added++;
+        if (await upsertJobContact(companyId, { name: m.login, title: "GitHub org member", source: "github_org", confidence: "LOW" })) {
+          added++;
+        }
       }
     }
   }

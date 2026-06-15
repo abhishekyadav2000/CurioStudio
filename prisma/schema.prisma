@@ -284,6 +284,11 @@ model AppSettings {
   healthWatchdog  Boolean  @default(true)
   lastLeadsScanAt DateTime?
   leadsBoardUrls  String?  // JSON: { greenhouse?: string[], lever?: string[] }
+  leadsAutoScanIntervalMinutes Int @default(5)
+  leadsMaxAgeDays Int          @default(45)
+  leadsAutoScanEnabled Boolean @default(true)
+  jobPreferences  String?      // JSON: JobPreferences
+  roadmapProgress String?      // JSON: Record<string, boolean>
   updatedAt       DateTime @updatedAt
 }
 
@@ -388,6 +393,7 @@ model JobLead {
   companyName     String?
   title           String
   url             String     @unique
+  normalizedKey   String?
   source          LeadSource
   location        String?
   remote          Boolean?
@@ -396,11 +402,18 @@ model JobLead {
   description     String?
   requirements    String?    // JSON array
   researchSummary String?
+  relevanceScore  Int        @default(0)
+  isFortune100    Boolean    @default(false)
   status          LeadStatus @default(NEW)
   enrichedAt      DateTime?
   capturedAt      DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
   outreach        OutreachDraft[]
+
+  @@index([relevanceScore])
+  @@index([normalizedKey])
+  @@index([postedAt])
+  @@index([status])
 }
 
 model CompanyIntel {

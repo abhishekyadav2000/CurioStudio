@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Loader2,
   Radar,
@@ -17,28 +17,40 @@ import {
   ChevronRight,
   Filter,
   ArrowRight,
+  Star,
+  Settings2,
+  Map,
+  Upload,
+  ToggleLeft,
+  ToggleRight,
+  Zap,
 } from "lucide-react";
 import { Breadcrumbs, PageHeader } from "@/components/page-header";
+import { ROLE_PRESETS } from "@/lib/leads/scoring";
 
 const SCROLL_LIST = "rounded-xl border border-border bg-card/30 max-h-[min(520px,60vh)] overflow-y-auto";
 const PAGE_SIZE = 25;
 
 type LeadStatus = "NEW" | "RESEARCHING" | "READY_OUTREACH" | "APPLIED" | "ARCHIVED";
 type LeadSource =
-  | "HN"
-  | "REMOTEOK"
-  | "GREENHOUSE"
-  | "GITHUB"
-  | "MANUAL"
-  | "FORTUNE_CAREERS"
-  | "WELLFOUND"
-  | "WWR"
-  | "BUILTIN"
-  | "INDEED"
-  | "LINKEDIN"
-  | "ASHBY"
-  | "LEVER";
-type Tab = "openings" | "companies" | "contacts" | "outreach";
+  | "HN" | "REMOTEOK" | "GREENHOUSE" | "GITHUB" | "MANUAL" | "FORTUNE_CAREERS"
+  | "WELLFOUND" | "WWR" | "BUILTIN" | "INDEED" | "LINKEDIN" | "ASHBY" | "LEVER";
+type Tab = "shortlist" | "openings" | "companies" | "contacts" | "preferences" | "roadmap" | "outreach";
+
+interface JobPreferences {
+  targetRoles: string[];
+  keywords: string[];
+  locations: string[];
+  remoteOnly: boolean;
+  excludeCompanies: string[];
+  preferencesSet?: boolean;
+}
+
+interface ScanSettings {
+  leadsAutoScanIntervalMinutes: number;
+  leadsMaxAgeDays: number;
+  leadsAutoScanEnabled: boolean;
+}
 
 interface CompanyIntel {
   id: string;
@@ -57,7 +69,7 @@ interface Contact {
   linkedinUrl?: string | null;
   source: string;
   confidence: "HIGH" | "MEDIUM" | "LOW";
-  company?: { id: string; name: string };
+  company?: { id: string; name: string; _count?: { jobLeads: number } };
 }
 
 interface Company {
@@ -75,6 +87,9 @@ interface Company {
   greenhouseSlug?: string | null;
   leverSlug?: string | null;
   linkedinSearchUrl?: string | null;
+  freshRoleCount?: number;
+  avgRelevance?: number;
+  isFortune100?: boolean;
   _count?: { jobLeads: number; contacts: number; intel: number };
   newLeadCount?: number;
   intel?: CompanyIntel[];
@@ -93,6 +108,8 @@ interface JobLead {
   postedAt?: string | null;
   description?: string | null;
   researchSummary?: string | null;
+  relevanceScore?: number;
+  isFortune100?: boolean;
   status: LeadStatus;
   capturedAt: string;
   company?: Company | null;
@@ -108,28 +125,28 @@ interface OutreachDraft {
   contact?: { id: string; name: string; title?: string | null } | null;
 }
 
+interface RoadmapItem {
+  id: number;
+  phase: number;
+  title: string;
+}
+
+interface RoadmapPhase {
+  phase: number;
+  items: RoadmapItem[];
+  completed: number;
+  total: number;
+}
+
 const SOURCE_LABELS: Record<LeadSource, string> = {
-  HN: "Hacker News",
-  REMOTEOK: "RemoteOK",
-  GREENHOUSE: "Greenhouse",
-  GITHUB: "GitHub",
-  MANUAL: "Manual",
-  FORTUNE_CAREERS: "Fortune / Top Cos",
-  WELLFOUND: "Wellfound",
-  WWR: "We Work Remotely",
-  BUILTIN: "Built In",
-  INDEED: "Indeed",
-  LINKEDIN: "LinkedIn",
-  ASHBY: "Ashby",
-  LEVER: "Lever",
+  HN: "Hacker News", REMOTEOK: "RemoteOK", GREENHOUSE: "Greenhouse", GITHUB: "GitHub",
+  MANUAL: "Manual", FORTUNE_CAREERS: "Fortune / Top Cos", WELLFOUND: "Wellfound",
+  WWR: "We Work Remotely", BUILTIN: "Built In", INDEED: "Indeed", LINKEDIN: "LinkedIn",
+  ASHBY: "Ashby", LEVER: "Lever",
 };
 
 const STATUS_LABELS: Record<LeadStatus, string> = {
-  NEW: "New",
-  RESEARCHING: "Researching",
-  READY_OUTREACH: "Ready",
-  APPLIED: "Applied",
-  ARCHIVED: "Archived",
+  NEW: "New", RESEARCHING: "Researching", READY_OUTREACH: "Ready", APPLIED: "Applied", ARCHIVED: "Archived",
 };
 
 const STATUS_COLORS: Record<LeadStatus, string> = {
@@ -155,23 +172,33 @@ function formatRelative(iso?: string | null) {
   return d.toLocaleString();
 }
 
-function parseTechStack(raw?: string | null): string[] {
-  if (!raw) return [];
-  try {
-    return JSON.parse(raw) as string[];
-  } catch {
-    return [];
-  }
+function freshnessBadge(iso?: string | null) {
+  if (!iso) return { label: "Unknown", cls: "bg-muted/10 text-muted" };
+  const days = (Date.now() - new Date(iso).getTime()) / (24 * 60 * 60 * 1000);
+  if (days <= 7) return { label: `${Math.max(1, Math.round(days))}d ago`, cls: "bg-emerald-500/10 text-emerald-400" };
+  if (days <= 30) return { label: `${Math.round(days)}d ago`, cls: "bg-amber-500/10 text-amber-400" };
+  return { label: `${Math.round(days)}d+`, cls: "bg-red-500/10 text-red-400" };
 }
 
-export function LeadsPageClient() {
-  const [tab, setTab] = useState<Tab>("openings");
+function parseTechStack(raw?: string | null): string[] {
+  if (!raw) return [];
+  try { return JSON.parse(raw) as string[]; } catch { return []; }
+}
+
+interface LeadsPageClientProps {
+  initialTab?: Tab;
+}
+
+export function LeadsPageClient({ initialTab = "shortlist" }: LeadsPageClientProps) {
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [leads, setLeads] = useState<JobLead[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [drafts, setDrafts] = useState<OutreachDraft[]>([]);
   const [stats, setStats] = useState({ totalOpen: 0, newToday: 0, companiesTracked: 0, contactsFound: 0 });
   const [lastScanAt, setLastScanAt] = useState<string | null>(null);
+  const [scanSettings, setScanSettings] = useState<ScanSettings>({ leadsAutoScanIntervalMinutes: 5, leadsMaxAgeDays: 45, leadsAutoScanEnabled: true });
+  const [preferences, setPreferences] = useState<JobPreferences>({ targetRoles: [], keywords: [], locations: [], remoteOnly: false, excludeCompanies: [] });
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [enriching, setEnriching] = useState(false);
@@ -185,59 +212,128 @@ export function LeadsPageClient() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [contactCompanyFilter, setContactCompanyFilter] = useState<string>("ALL");
   const [sourceFilter, setSourceFilter] = useState<LeadSource | "ALL">("ALL");
+  const [minRelevance, setMinRelevance] = useState(0);
+  const [postedWithin, setPostedWithin] = useState(45);
+  const [remoteOnly, setRemoteOnly] = useState(false);
+  const [fortune100Filter, setFortune100Filter] = useState(false);
+  const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [showPrefsModal, setShowPrefsModal] = useState(false);
+  const [prefsDraft, setPrefsDraft] = useState<JobPreferences>({ targetRoles: [], keywords: [], locations: [], remoteOnly: false, excludeCompanies: [] });
+  const [keywordInput, setKeywordInput] = useState("");
+  const [locationInput, setLocationInput] = useState("");
+  const [uploadingResume, setUploadingResume] = useState(false);
+  const [roadmapPhases, setRoadmapPhases] = useState<RoadmapPhase[]>([]);
+  const [roadmapProgress, setRoadmapProgress] = useState<Record<string, boolean>>({});
+  const [fortune100Companies, setFortune100Companies] = useState(false);
+  const scanIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [, setTick] = useState(0);
+
+  const buildLeadsQuery = useCallback(
+    (shortlist: boolean) => {
+      const params = new URLSearchParams();
+      params.set("limit", shortlist ? "50" : "200");
+      if (shortlist) params.set("shortlist", "true");
+      if (sourceFilter !== "ALL") params.set("source", sourceFilter);
+      if (minRelevance > 0) params.set("minRelevance", String(minRelevance));
+      if (postedWithin > 0) params.set("postedWithin", String(postedWithin));
+      if (remoteOnly) params.set("remoteOnly", "true");
+      if (fortune100Filter) params.set("fortune100", "true");
+      if (selectedRoles.length) params.set("roles", selectedRoles.join(","));
+      return params.toString();
+    },
+    [sourceFilter, minRelevance, postedWithin, remoteOnly, fortune100Filter, selectedRoles]
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
-    const sourceParam = sourceFilter !== "ALL" ? `&source=${sourceFilter}` : "";
-    const [leadsRes, companiesRes, contactsRes, outreachRes] = await Promise.all([
-      fetch(`/api/leads?limit=200${sourceParam}`).then((r) => r.json()),
-      fetch("/api/leads/companies").then((r) => r.json()),
+    const isShortlist = tab === "shortlist";
+    const query = buildLeadsQuery(isShortlist);
+    const [leadsRes, companiesRes, contactsRes, outreachRes, prefsRes, roadmapRes] = await Promise.all([
+      fetch(`/api/leads?${query}`).then((r) => r.json()),
+      fetch(`/api/leads/companies${fortune100Companies ? "?fortune100=true" : ""}`).then((r) => r.json()),
       fetch("/api/leads/contacts").then((r) => r.json()),
       fetch("/api/leads/outreach").then((r) => r.json()),
+      fetch("/api/leads/preferences").then((r) => r.json()),
+      fetch("/api/leads/roadmap").then((r) => r.json()),
     ]);
 
     setLeads(leadsRes.leads ?? []);
     setStats(leadsRes.stats ?? { totalOpen: 0, newToday: 0, companiesTracked: 0, contactsFound: 0 });
     setLastScanAt(leadsRes.lastScanAt ?? null);
+    if (leadsRes.scanSettings) setScanSettings(leadsRes.scanSettings);
+    if (leadsRes.preferences) setPreferences(leadsRes.preferences);
     setCompanies(companiesRes.companies ?? []);
     setContacts(contactsRes.contacts ?? []);
     setDrafts(outreachRes.drafts ?? []);
+    if (prefsRes.preferences) {
+      setPreferences(prefsRes.preferences);
+      if (!prefsRes.preferences.preferencesSet) setShowPrefsModal(true);
+    }
+    if (roadmapRes.phases) setRoadmapPhases(roadmapRes.phases);
+    if (roadmapRes.progress) setRoadmapProgress(roadmapRes.progress);
     setLoading(false);
-  }, [sourceFilter]);
+  }, [tab, buildLeadsQuery, fortune100Companies]);
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
     load();
   }, [load]);
 
-  async function runScan() {
-    setScanning(true);
+  const runScan = useCallback(async (silent = false) => {
+    if (scanning) return;
+    if (!silent) setScanning(true);
     setScanError(null);
-    setScanMessage(null);
+    if (!silent) setScanMessage(null);
     try {
-      const res = await fetch("/api/leads/scan", { method: "POST" });
+      const res = await fetch("/api/leads/cron");
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Scan failed");
-
-      const breakdown = data.bySource as Record<string, number> | undefined;
-      if (breakdown) {
-        const parts = Object.entries(breakdown)
-          .sort((a, b) => b[1] - a[1])
-          .map(([src, n]) => `${SOURCE_LABELS[src as LeadSource] ?? src}: ${n}`);
-        setSourceBreakdown(breakdown);
-        setScanMessage(`Added ${data.added} · ${data.total} fetched · ${parts.join(" · ")}`);
-      } else {
-        setScanMessage(`Added ${data.added} leads · ${data.total} fetched`);
+      if (res.status === 429) {
+        if (!silent) setScanError(`Rate limited — retry in ${Math.ceil((data.retryAfterMs ?? 10000) / 1000)}s`);
+        return;
       }
-      if (data.errors?.length) setScanError(data.errors.join("; "));
+      if (data.skipped && data.reason === "Auto-scan disabled") return;
+      if (!res.ok && data.error) throw new Error(data.error);
+
+      if (data.message || data.added !== undefined) {
+        const msg = data.message ?? `Added ${data.added} · Pruned ${data.pruned ?? 0} stale`;
+        if (!silent) setScanMessage(msg);
+        if (data.bySource) setSourceBreakdown(data.bySource);
+        if (data.errors?.length) setScanError(data.errors.join("; "));
+      }
       await load();
     } catch (err) {
-      setScanError(err instanceof Error ? err.message : "Scan failed");
+      if (!silent) setScanError(err instanceof Error ? err.message : "Scan failed");
     } finally {
-      setScanning(false);
+      if (!silent) setScanning(false);
     }
-  }
+  }, [scanning, load]);
+
+  useEffect(() => {
+    if (scanSettings.leadsAutoScanEnabled) {
+      runScan(true);
+      scanIntervalRef.current = setInterval(
+        () => runScan(true),
+        scanSettings.leadsAutoScanIntervalMinutes * 60 * 1000
+      );
+    }
+    return () => {
+      if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
+    };
+  }, [scanSettings.leadsAutoScanEnabled, scanSettings.leadsAutoScanIntervalMinutes]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  const nextScanIn = useMemo(() => {
+    if (!lastScanAt || !scanSettings.leadsAutoScanEnabled) return null;
+    const elapsed = Date.now() - new Date(lastScanAt).getTime();
+    const remaining = scanSettings.leadsAutoScanIntervalMinutes * 60 * 1000 - elapsed;
+    if (remaining <= 0) return "soon";
+    return `${Math.ceil(remaining / 60000)}m`;
+  }, [lastScanAt, scanSettings]);
 
   async function runEnrichAll() {
     setEnriching(true);
@@ -249,12 +345,44 @@ export function LeadsPageClient() {
     }
   }
 
-  async function updateStatus(id: string, status: LeadStatus) {
-    await fetch(`/api/leads/${id}`, {
+  async function savePreferences() {
+    await fetch("/api/leads/preferences", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ preferences: prefsDraft }),
     });
+    setPreferences(prefsDraft);
+    setShowPrefsModal(false);
+    await load();
+  }
+
+  async function uploadResume(file: File) {
+    setUploadingResume(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/leads/resume", { method: "POST", body: fd });
+      const data = await res.json();
+      if (res.ok && data.preferences) {
+        setPrefsDraft(data.preferences);
+        setPreferences(data.preferences);
+      }
+    } finally {
+      setUploadingResume(false);
+    }
+  }
+
+  async function toggleRoadmapItem(id: number, completed: boolean) {
+    await fetch("/api/leads/roadmap", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ itemId: id, completed }),
+    });
+    setRoadmapProgress((p) => ({ ...p, [String(id)]: completed }));
+  }
+
+  async function updateStatus(id: string, status: LeadStatus) {
+    await fetch(`/api/leads/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) });
     setLeads((prev) => prev.map((l) => (l.id === id ? { ...l, status } : l)));
     if (selectedLead?.id === id) setSelectedLead((l) => (l ? { ...l, status } : l));
   }
@@ -267,11 +395,7 @@ export function LeadsPageClient() {
       if (!res.ok) throw new Error(data.error ?? "Research failed");
       await load();
       if (data.result?.summary) {
-        setSelectedLead((prev) =>
-          prev?.id === lead.id
-            ? { ...prev, researchSummary: data.result.summary, status: "READY_OUTREACH" }
-            : prev
-        );
+        setSelectedLead((prev) => prev?.id === lead.id ? { ...prev, researchSummary: data.result.summary, status: "READY_OUTREACH" } : prev);
       }
     } finally {
       setResearching(false);
@@ -281,15 +405,8 @@ export function LeadsPageClient() {
   async function generateOutreach(leadId: string) {
     setGeneratingOutreach(true);
     try {
-      const res = await fetch("/api/leads/outreach", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobLeadId: leadId }),
-      });
-      if (res.ok) {
-        setTab("outreach");
-        await load();
-      }
+      const res = await fetch("/api/leads/outreach", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jobLeadId: leadId }) });
+      if (res.ok) { setTab("outreach"); await load(); }
     } finally {
       setGeneratingOutreach(false);
     }
@@ -297,60 +414,110 @@ export function LeadsPageClient() {
 
   async function enrichCompany(id: string) {
     const res = await fetch(`/api/leads/companies/${id}`, { method: "POST" });
-    if (res.ok) {
-      const data = await res.json();
-      setSelectedCompany(data.company ?? null);
-      await load();
-    }
+    if (res.ok) { const data = await res.json(); setSelectedCompany(data.company ?? null); await load(); }
   }
 
   async function openCompanyProfile(id: string) {
     const res = await fetch(`/api/leads/companies/${id}`);
     const data = await res.json();
-    if (data.company) {
-      setSelectedCompany(data.company);
-      setTab("companies");
-    }
+    if (data.company) { setSelectedCompany(data.company); setTab("companies"); }
   }
 
   async function markDraftSent(id: string) {
-    await fetch("/api/leads/outreach", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, status: "SENT" }),
-    });
+    await fetch("/api/leads/outreach", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, status: "SENT" }) });
     setDrafts((prev) => prev.map((d) => (d.id === id ? { ...d, status: "SENT" } : d)));
   }
 
   function copyDraft(draft: OutreachDraft) {
-    const text = `Subject: ${draft.subject}\n\n${draft.body}`;
-    navigator.clipboard.writeText(text);
+    navigator.clipboard.writeText(`Subject: ${draft.subject}\n\n${draft.body}`);
     setCopiedId(draft.id);
     setTimeout(() => setCopiedId(null), 2000);
   }
 
-  const filteredContacts =
-    contactCompanyFilter === "ALL"
-      ? contacts
-      : contacts.filter((c) => c.company?.id === contactCompanyFilter);
+  function toggleRolePreset(role: string) {
+    setPrefsDraft((p) => ({
+      ...p,
+      targetRoles: p.targetRoles.includes(role) ? p.targetRoles.filter((r) => r !== role) : [...p.targetRoles, role],
+    }));
+  }
 
+  const filteredContacts = contactCompanyFilter === "ALL" ? contacts : contacts.filter((c) => c.company?.id === contactCompanyFilter);
   const visibleLeads = leads.slice(0, visibleCount);
   const hasMoreLeads = visibleCount < leads.length;
 
   const sourceOptions = useMemo(() => {
-    const counts = leads.reduce<Record<string, number>>((acc, l) => {
-      acc[l.source] = (acc[l.source] ?? 0) + 1;
-      return acc;
-    }, {});
+    const counts = leads.reduce<Record<string, number>>((acc, l) => { acc[l.source] = (acc[l.source] ?? 0) + 1; return acc; }, {});
     return Object.entries(counts).sort((a, b) => b[1] - a[1]);
   }, [leads]);
 
   const tabs: { key: Tab; label: string; icon: typeof Radar }[] = [
-    { key: "openings", label: "Openings", icon: Briefcase },
+    { key: "shortlist", label: "Shortlist", icon: Star },
+    { key: "openings", label: "All Openings", icon: Briefcase },
     { key: "companies", label: "Companies", icon: Building2 },
     { key: "contacts", label: "Contacts", icon: Users },
+    { key: "preferences", label: "Preferences", icon: Settings2 },
+    { key: "roadmap", label: "Roadmap", icon: Map },
     { key: "outreach", label: "Outreach", icon: Mail },
   ];
+
+  function LeadRow({ lead }: { lead: JobLead }) {
+    const fresh = freshnessBadge(lead.postedAt ?? lead.capturedAt);
+    return (
+      <button
+        key={lead.id}
+        onClick={() => setSelectedLead(lead)}
+        className="w-full text-left p-3 rounded-xl bg-card border border-border hover:border-accent/30 transition-colors flex items-center gap-3"
+      >
+        <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center shrink-0">
+          <Briefcase className="w-4 h-4 text-accent" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-medium text-sm">{lead.title}</span>
+            {lead.relevanceScore != null && lead.relevanceScore > 0 && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent font-semibold">{lead.relevanceScore}</span>
+            )}
+            {lead.remote && <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent">Remote</span>}
+            {lead.isFortune100 && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">F100</span>}
+            <span className={`text-[10px] px-1.5 py-0.5 rounded ${fresh.cls}`}>{fresh.label}</span>
+          </div>
+          <p className="text-xs text-muted mt-0.5 truncate">
+            {lead.companyName ?? "Unknown"} · {SOURCE_LABELS[lead.source]} · {formatDate(lead.postedAt ?? lead.capturedAt)}
+          </p>
+        </div>
+        <ChevronRight className="w-4 h-4 text-muted shrink-0" />
+      </button>
+    );
+  }
+
+  const filterBar = (
+    <div className="flex flex-wrap items-center gap-2 mb-2 shrink-0">
+      <Filter className="w-3.5 h-3.5 text-muted" />
+      <label className="text-xs text-muted flex items-center gap-1">
+        Min score
+        <input type="range" min={0} max={100} value={minRelevance} onChange={(e) => setMinRelevance(parseInt(e.target.value, 10))} className="w-20" />
+        <span className="w-6">{minRelevance}</span>
+      </label>
+      <select value={postedWithin} onChange={(e) => setPostedWithin(parseInt(e.target.value, 10))} className="bg-card border border-border rounded-lg px-2 py-1 text-xs">
+        <option value={0}>Any age</option>
+        <option value={7}>7 days</option>
+        <option value={30}>30 days</option>
+        <option value={45}>45 days</option>
+      </select>
+      <label className="text-xs flex items-center gap-1 cursor-pointer">
+        <input type="checkbox" checked={remoteOnly} onChange={(e) => setRemoteOnly(e.target.checked)} /> Remote
+      </label>
+      <label className="text-xs flex items-center gap-1 cursor-pointer">
+        <input type="checkbox" checked={fortune100Filter} onChange={(e) => setFortune100Filter(e.target.checked)} /> Fortune 100
+      </label>
+      <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value as LeadSource | "ALL")} className="bg-card border border-border rounded-lg px-2 py-1 text-xs">
+        <option value="ALL">All sources</option>
+        {sourceOptions.map(([src, n]) => (
+          <option key={src} value={src}>{SOURCE_LABELS[src as LeadSource] ?? src} ({n})</option>
+        ))}
+      </select>
+    </div>
+  );
 
   return (
     <div className="h-full flex flex-col overflow-hidden max-w-6xl mx-auto p-4 lg:p-6">
@@ -358,16 +525,16 @@ export function LeadsPageClient() {
         <Breadcrumbs items={[{ label: "Dashboard", href: "/" }, { label: "Insider Tracker" }]} />
         <PageHeader
           title="Insider Tracker"
-          description="Scan 80+ top companies, job boards, and ATS feeds — enrich, research, outreach"
+          description="Fresh roles from top 100 companies — scored to your preferences, auto-scanned every few minutes"
           actions={
             <>
               <button
-                onClick={runScan}
+                onClick={() => runScan(false)}
                 disabled={scanning}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-dim disabled:opacity-60"
+                className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm hover:bg-card-hover disabled:opacity-60"
               >
                 {scanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Radar className="w-4 h-4" />}
-                Scan for openings
+                Scan now
               </button>
               <button
                 onClick={runEnrichAll}
@@ -375,39 +542,47 @@ export function LeadsPageClient() {
                 className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm hover:bg-card-hover disabled:opacity-60"
               >
                 {enriching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                Enrich all
+                Enrich
               </button>
             </>
           }
         />
 
         <div className="mb-3 p-2.5 rounded-lg bg-accent/5 border border-accent/20 flex items-center gap-2 text-xs text-muted">
-          <ArrowRight className="w-3.5 h-3.5 text-accent shrink-0" />
+          <Zap className="w-3.5 h-3.5 text-accent shrink-0" />
           <span>
-            Pipeline: scan openings → enrich companies → research roles → draft outreach. Pair with{" "}
-            <a href="/discover" className="text-accent hover:underline">Discover</a> and{" "}
-            <a href="/queue" className="text-accent hover:underline">Queue</a> for content workflow.
+            {scanSettings.leadsAutoScanEnabled ? (
+              <>Auto-scan every {scanSettings.leadsAutoScanIntervalMinutes}m · max age {scanSettings.leadsMaxAgeDays}d · </>
+            ) : (
+              <>Auto-scan off · </>
+            )}
+            Last scan: {formatRelative(lastScanAt)}
+            {nextScanIn && <> · Next: {nextScanIn}</>}
           </span>
+          <button
+            onClick={async () => {
+              const next = !scanSettings.leadsAutoScanEnabled;
+              await fetch("/api/leads/preferences", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leadsAutoScanEnabled: next }) });
+              setScanSettings((s) => ({ ...s, leadsAutoScanEnabled: next }));
+            }}
+            className="ml-auto shrink-0"
+            title="Toggle auto-scan"
+          >
+            {scanSettings.leadsAutoScanEnabled ? <ToggleRight className="w-5 h-5 text-accent" /> : <ToggleLeft className="w-5 h-5 text-muted" />}
+          </button>
         </div>
 
-        <p className="text-xs text-muted mb-2">Last scan: {formatRelative(lastScanAt)}</p>
         {scanMessage && <p className="text-xs text-emerald-400 mb-2">{scanMessage}</p>}
         {sourceBreakdown && (
           <div className="flex flex-wrap gap-1.5 mb-2">
-            {Object.entries(sourceBreakdown)
-              .sort((a, b) => b[1] - a[1])
-              .map(([src, n]) => (
-                <span key={src} className="text-[10px] px-2 py-0.5 rounded-full bg-card border border-border">
-                  {SOURCE_LABELS[src as LeadSource] ?? src}: <strong>{n}</strong>
-                </span>
-              ))}
+            {Object.entries(sourceBreakdown).sort((a, b) => b[1] - a[1]).map(([src, n]) => (
+              <span key={src} className="text-[10px] px-2 py-0.5 rounded-full bg-card border border-border">
+                {SOURCE_LABELS[src as LeadSource] ?? src}: <strong>{n}</strong>
+              </span>
+            ))}
           </div>
         )}
-        {scanError && (
-          <p className="text-xs text-amber-400 mb-2 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20">
-            {scanError}
-          </p>
-        )}
+        {scanError && <p className="text-xs text-amber-400 mb-2 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20">{scanError}</p>}
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-4">
           {[
@@ -441,79 +616,30 @@ export function LeadsPageClient() {
 
       <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
         {loading ? (
-          <div className="flex justify-center py-16">
-            <Loader2 className="w-8 h-8 animate-spin text-accent" />
-          </div>
+          <div className="flex justify-center py-16"><Loader2 className="w-8 h-8 animate-spin text-accent" /></div>
         ) : (
           <>
-            {tab === "openings" && (
+            {(tab === "shortlist" || tab === "openings") && (
               <div className="flex flex-col min-h-0 flex-1">
-                <div className="flex items-center gap-2 mb-2 shrink-0">
-                  <Filter className="w-3.5 h-3.5 text-muted" />
-                  <select
-                    value={sourceFilter}
-                    onChange={(e) => setSourceFilter(e.target.value as LeadSource | "ALL")}
-                    className="bg-card border border-border rounded-lg px-2 py-1.5 text-xs"
-                  >
-                    <option value="ALL">All sources ({leads.length})</option>
-                    {sourceOptions.map(([src, n]) => (
-                      <option key={src} value={src}>
-                        {SOURCE_LABELS[src as LeadSource] ?? src} ({n})
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                {filterBar}
+                {tab === "shortlist" && (
+                  <p className="text-xs text-muted mb-2">Top {leads.length} matches for your preferences · sorted by relevance</p>
+                )}
                 {leads.length === 0 ? (
                   <div className="p-10 rounded-xl border border-dashed border-border text-center shrink-0">
-                    <Radar className="w-10 h-10 mx-auto mb-3 text-muted opacity-50" />
-                    <p className="text-sm text-muted mb-3">
-                      No openings yet. Scan pulls from Fortune 80+, RemoteOK, Indeed, LinkedIn, Wellfound, Built In, HN, GitHub, and ATS boards.
-                    </p>
-                    <button onClick={runScan} disabled={scanning} className="px-4 py-2 rounded-lg bg-accent text-white text-sm">
-                      Scan for openings
-                    </button>
+                    <Star className="w-10 h-10 mx-auto mb-3 text-muted opacity-50" />
+                    <p className="text-sm text-muted mb-3">No matching openings. Set preferences or wait for the next auto-scan.</p>
+                    <button onClick={() => setShowPrefsModal(true)} className="px-4 py-2 rounded-lg bg-accent text-white text-sm">Set preferences</button>
                   </div>
                 ) : (
                   <>
                     <div className={`${SCROLL_LIST} flex-1 min-h-0`}>
-                      <div className="space-y-1.5 p-2">
-                        {visibleLeads.map((lead) => (
-                          <button
-                            key={lead.id}
-                            onClick={() => setSelectedLead(lead)}
-                            className="w-full text-left p-3 rounded-xl bg-card border border-border hover:border-accent/30 transition-colors flex items-center gap-3"
-                          >
-                            <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center shrink-0">
-                              <Briefcase className="w-4 h-4 text-accent" />
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="font-medium text-sm">{lead.title}</span>
-                                {lead.remote && (
-                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent">Remote</span>
-                                )}
-                                <span className={`text-[10px] px-1.5 py-0.5 rounded border ${STATUS_COLORS[lead.status]}`}>
-                                  {STATUS_LABELS[lead.status]}
-                                </span>
-                              </div>
-                              <p className="text-xs text-muted mt-0.5 truncate">
-                                {lead.companyName ?? "Unknown"} · {SOURCE_LABELS[lead.source]} · {formatDate(lead.postedAt ?? lead.capturedAt)}
-                              </p>
-                            </div>
-                            <ChevronRight className="w-4 h-4 text-muted shrink-0" />
-                          </button>
-                        ))}
-                      </div>
+                      <div className="space-y-1.5 p-2">{visibleLeads.map((lead) => <LeadRow key={lead.id} lead={lead} />)}</div>
                     </div>
                     <div className="mt-2 flex items-center justify-between text-xs text-muted shrink-0">
                       <span>Showing {visibleLeads.length} of {leads.length}</span>
                       {hasMoreLeads && (
-                        <button
-                          onClick={() => setVisibleCount((n) => n + PAGE_SIZE)}
-                          className="px-3 py-1.5 rounded-lg border border-border hover:bg-card-hover text-sm text-foreground"
-                        >
-                          Load more
-                        </button>
+                        <button onClick={() => setVisibleCount((n) => n + PAGE_SIZE)} className="px-3 py-1.5 rounded-lg border border-border hover:bg-card-hover text-sm text-foreground">Load more</button>
                       )}
                     </div>
                   </>
@@ -522,36 +648,34 @@ export function LeadsPageClient() {
             )}
 
             {tab === "companies" && (
-              <div className={`${SCROLL_LIST} flex-1 min-h-0`}>
-                <div className="grid md:grid-cols-2 gap-2 p-2">
-                  {companies.length === 0 ? (
-                    <p className="text-sm text-muted col-span-2 p-8 text-center">
-                      Companies appear when you scan job openings.
-                    </p>
-                  ) : (
-                    companies.map((co) => (
-                      <button
-                        key={co.id}
-                        onClick={() => openCompanyProfile(co.id)}
-                        className="p-3 rounded-xl bg-card border border-border hover:border-accent/30 text-left transition-colors"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <p className="font-semibold text-sm">{co.name}</p>
-                          {co.lastEnrichedAt ? (
-                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 shrink-0">Enriched</span>
-                          ) : (
-                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-muted/10 text-muted shrink-0">Pending</span>
-                          )}
-                        </div>
-                        <p className="text-xs text-muted mt-1">
-                          {co._count?.jobLeads ?? 0} roles · {co._count?.contacts ?? 0} contacts
-                        </p>
-                        {co.careersUrl && (
-                          <p className="text-[10px] text-accent mt-1 truncate">{co.careersUrl.replace(/^https?:\/\//, "")}</p>
-                        )}
-                      </button>
-                    ))
-                  )}
+              <div className="flex flex-col min-h-0 flex-1">
+                <label className="text-xs flex items-center gap-2 mb-2 shrink-0 cursor-pointer">
+                  <input type="checkbox" checked={fortune100Companies} onChange={(e) => setFortune100Companies(e.target.checked)} />
+                  Top 100 companies only
+                </label>
+                <div className={`${SCROLL_LIST} flex-1 min-h-0`}>
+                  <div className="grid md:grid-cols-2 gap-2 p-2">
+                    {companies.length === 0 ? (
+                      <p className="text-sm text-muted col-span-2 p-8 text-center">Companies appear when you scan job openings.</p>
+                    ) : (
+                      companies.map((co) => (
+                        <button key={co.id} onClick={() => openCompanyProfile(co.id)} className="p-3 rounded-xl bg-card border border-border hover:border-accent/30 text-left transition-colors">
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="font-semibold text-sm">{co.name}</p>
+                            <div className="flex gap-1 shrink-0">
+                              {co.isFortune100 && <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">F100</span>}
+                              {co.lastEnrichedAt ? <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400">Enriched</span> : <span className="text-[9px] px-1.5 py-0.5 rounded bg-muted/10 text-muted">Pending</span>}
+                            </div>
+                          </div>
+                          <p className="text-xs text-muted mt-1">
+                            {co.freshRoleCount ?? co._count?.jobLeads ?? 0} fresh roles
+                            {co.avgRelevance ? ` · avg score ${co.avgRelevance}` : ""}
+                            · {co._count?.contacts ?? 0} contacts
+                          </p>
+                        </button>
+                      ))
+                    )}
+                  </div>
                 </div>
               </div>
             )}
@@ -559,21 +683,13 @@ export function LeadsPageClient() {
             {tab === "contacts" && (
               <div className="flex flex-col min-h-0 flex-1">
                 <div className="mb-2 shrink-0">
-                  <select
-                    value={contactCompanyFilter}
-                    onChange={(e) => setContactCompanyFilter(e.target.value)}
-                    className="bg-card border border-border rounded-lg px-3 py-1.5 text-xs"
-                  >
+                  <select value={contactCompanyFilter} onChange={(e) => setContactCompanyFilter(e.target.value)} className="bg-card border border-border rounded-lg px-3 py-1.5 text-xs">
                     <option value="ALL">All companies</option>
-                    {companies.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
+                    {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                 </div>
                 {filteredContacts.length === 0 ? (
-                  <p className="text-sm text-muted p-8 text-center border border-dashed border-border rounded-xl">
-                    No contacts yet. Enrich companies to discover emails and team members.
-                  </p>
+                  <p className="text-sm text-muted p-8 text-center border border-dashed border-border rounded-xl">No contacts yet. Enrich companies to discover emails.</p>
                 ) : (
                   <div className={`${SCROLL_LIST} flex-1 min-h-0 overflow-x-auto`}>
                     <table className="w-full text-sm">
@@ -593,19 +709,14 @@ export function LeadsPageClient() {
                             <td className="p-2 text-muted">{c.title ?? "—"}</td>
                             <td className="p-2 text-muted">{c.company?.name ?? "—"}</td>
                             <td className="p-2">
-                              {c.email ? (
-                                <a href={`mailto:${c.email}`} className="text-accent hover:underline text-xs">{c.email}</a>
-                              ) : c.linkedinUrl ? (
-                                <a href={c.linkedinUrl} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline text-xs">LinkedIn</a>
-                              ) : (
-                                <span className="text-muted text-xs">—</span>
-                              )}
+                              {c.email ? <a href={`mailto:${c.email}`} className="text-accent hover:underline text-xs">{c.email}</a>
+                                : c.linkedinUrl ? <a href={c.linkedinUrl} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline text-xs">LinkedIn</a>
+                                : <span className="text-muted text-xs">—</span>}
                             </td>
                             <td className="p-2">
                               <span className={`text-[10px] px-1.5 py-0.5 rounded ${
                                 c.confidence === "HIGH" ? "bg-emerald-500/10 text-emerald-400"
-                                  : c.confidence === "MEDIUM" ? "bg-amber-500/10 text-amber-400"
-                                    : "bg-muted/10 text-muted"
+                                  : c.confidence === "MEDIUM" ? "bg-amber-500/10 text-amber-400" : "bg-muted/10 text-muted"
                               }`}>{c.confidence}</span>
                             </td>
                           </tr>
@@ -617,37 +728,79 @@ export function LeadsPageClient() {
               </div>
             )}
 
+            {tab === "preferences" && (
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-4 p-2">
+                <PreferencesForm
+                  prefs={preferences}
+                  onChange={setPrefsDraft}
+                  keywordInput={keywordInput}
+                  setKeywordInput={setKeywordInput}
+                  locationInput={locationInput}
+                  setLocationInput={setLocationInput}
+                  onSave={async () => {
+                    await fetch("/api/leads/preferences", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ preferences: preferences }) });
+                    await load();
+                  }}
+                  onUpload={uploadResume}
+                  uploading={uploadingResume}
+                />
+              </div>
+            )}
+
+            {tab === "roadmap" && (
+              <div className={`${SCROLL_LIST} flex-1 min-h-0`}>
+                <div className="p-4 space-y-6">
+                  <p className="text-sm text-muted">100-item roadmap toward auto-apply. See <code className="text-xs bg-card px-1 rounded">docs/INSIDER_TRACKER_ROADMAP.md</code></p>
+                  {roadmapPhases.map((phase) => (
+                    <div key={phase.phase}>
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="font-semibold text-sm">Phase {phase.phase}</h3>
+                        <span className="text-xs text-muted">{phase.completed}/{phase.total} complete</span>
+                      </div>
+                      <div className="w-full h-1.5 bg-card rounded-full mb-3">
+                        <div className="h-full bg-accent rounded-full transition-all" style={{ width: `${phase.total ? (phase.completed / phase.total) * 100 : 0}%` }} />
+                      </div>
+                      <div className="space-y-1">
+                        {phase.items.map((item) => (
+                          <label key={item.id} className="flex items-start gap-2 text-xs p-2 rounded-lg hover:bg-card/50 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={roadmapProgress[String(item.id)] ?? (item.id <= 30)}
+                              onChange={(e) => toggleRoadmapItem(item.id, e.target.checked)}
+                              className="mt-0.5"
+                            />
+                            <span><span className="text-muted">{item.id}.</span> {item.title}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {tab === "outreach" && (
               <div className={`${SCROLL_LIST} flex-1 min-h-0`}>
                 <div className="space-y-2 p-2">
                   {drafts.length === 0 ? (
-                    <p className="text-sm text-muted p-8 text-center">
-                      No outreach drafts yet. Open a lead and click &quot;Generate outreach email&quot;.
-                    </p>
+                    <p className="text-sm text-muted p-8 text-center">No outreach drafts yet. Open a lead and generate outreach.</p>
                   ) : (
                     drafts.map((draft) => (
                       <div key={draft.id} className="p-3 rounded-xl bg-card border border-border">
                         <div className="flex items-start justify-between gap-3 mb-2">
                           <div>
                             <p className="font-medium text-sm">{draft.subject}</p>
-                            <p className="text-xs text-muted mt-0.5">
-                              {draft.jobLead?.title ?? "General"} · {draft.jobLead?.companyName ?? ""} · {formatRelative(draft.createdAt)}
-                            </p>
+                            <p className="text-xs text-muted mt-0.5">{draft.jobLead?.title ?? "General"} · {formatRelative(draft.createdAt)}</p>
                           </div>
-                          <span className={`text-[10px] px-2 py-0.5 rounded border ${
-                            draft.status === "SENT" ? "text-emerald-400 border-emerald-400/30" : "text-muted border-border"
-                          }`}>{draft.status}</span>
+                          <span className={`text-[10px] px-2 py-0.5 rounded border ${draft.status === "SENT" ? "text-emerald-400 border-emerald-400/30" : "text-muted border-border"}`}>{draft.status}</span>
                         </div>
                         <pre className="text-xs text-muted whitespace-pre-wrap font-sans mb-2 max-h-32 overflow-y-auto">{draft.body}</pre>
                         <div className="flex gap-2">
                           <button onClick={() => copyDraft(draft)} className="flex items-center gap-1 px-2 py-1 rounded-lg border border-border text-xs hover:bg-card-hover">
-                            {copiedId === draft.id ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                            Copy
+                            {copiedId === draft.id ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} Copy
                           </button>
                           {draft.status === "DRAFT" && (
-                            <button onClick={() => markDraftSent(draft.id)} className="px-2 py-1 rounded-lg bg-accent/10 text-accent text-xs hover:bg-accent/20">
-                              Mark sent
-                            </button>
+                            <button onClick={() => markDraftSent(draft.id)} className="px-2 py-1 rounded-lg bg-accent/10 text-accent text-xs hover:bg-accent/20">Mark sent</button>
                           )}
                         </div>
                       </div>
@@ -660,185 +813,239 @@ export function LeadsPageClient() {
         )}
       </div>
 
-      {selectedLead && (
-        <div className="fixed inset-0 z-50 flex justify-end">
-          <div className="absolute inset-0 bg-black/50" onClick={() => setSelectedLead(null)} />
-          <div className="relative w-full max-w-lg bg-background border-l border-border h-full overflow-y-auto p-6 shadow-xl">
-            <div className="flex items-start justify-between mb-4">
-              <div>
-                <h2 className="text-lg font-bold">{selectedLead.title}</h2>
-                <p className="text-sm text-muted">{selectedLead.companyName ?? "Unknown company"}</p>
-              </div>
-              <button onClick={() => setSelectedLead(null)} className="p-2 rounded-lg hover:bg-card-hover">
-                <X className="w-5 h-5" />
-              </button>
+      {showPrefsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setShowPrefsModal(false)} />
+          <div className="relative w-full max-w-lg bg-background border border-border rounded-xl p-6 shadow-xl max-h-[90vh] overflow-y-auto">
+            <h2 className="text-lg font-bold mb-1">What are you looking for?</h2>
+            <p className="text-sm text-muted mb-4">We&apos;ll score and shortlist roles that match — no scrolling through 9000 stale listings.</p>
+            <PreferencesForm
+              prefs={prefsDraft}
+              onChange={setPrefsDraft}
+              keywordInput={keywordInput}
+              setKeywordInput={setKeywordInput}
+              locationInput={locationInput}
+              setLocationInput={setLocationInput}
+              onUpload={uploadResume}
+              uploading={uploadingResume}
+              showPresets
+              toggleRole={toggleRolePreset}
+            />
+            <div className="flex gap-2 mt-4">
+              <button onClick={savePreferences} className="flex-1 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium">Save preferences</button>
+              <button onClick={() => setShowPrefsModal(false)} className="px-4 py-2 rounded-lg border border-border text-sm">Skip</button>
             </div>
-
-            <div className="flex flex-wrap gap-2 mb-4">
-              <select
-                value={selectedLead.status}
-                onChange={(e) => updateStatus(selectedLead.id, e.target.value as LeadStatus)}
-                className={`text-xs px-2 py-1 rounded-lg border ${STATUS_COLORS[selectedLead.status]}`}
-              >
-                {Object.entries(STATUS_LABELS).map(([k, v]) => (
-                  <option key={k} value={k}>{v}</option>
-                ))}
-              </select>
-              <a href={selectedLead.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 px-3 py-1 rounded-lg border border-border text-xs hover:bg-card-hover">
-                <ExternalLink className="w-3 h-3" /> View posting
-              </a>
-            </div>
-
-            {selectedLead.description && (
-              <div className="mb-4">
-                <p className="text-[10px] text-muted uppercase mb-1">Description</p>
-                <p className="text-xs whitespace-pre-wrap text-foreground/80 max-h-48 overflow-y-auto">{selectedLead.description}</p>
-              </div>
-            )}
-
-            {selectedLead.researchSummary ? (
-              <div className="mb-4 p-3 rounded-lg bg-accent/5 border border-accent/20">
-                <p className="text-[10px] text-accent uppercase mb-1 font-semibold">What they want</p>
-                <p className="text-xs whitespace-pre-wrap">{selectedLead.researchSummary}</p>
-              </div>
-            ) : (
-              <button
-                onClick={() => researchLead(selectedLead)}
-                disabled={researching}
-                className="w-full mb-4 flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-accent/40 text-accent text-sm hover:bg-accent/10 disabled:opacity-60"
-              >
-                {researching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                Research lead
-              </button>
-            )}
-
-            {selectedLead.company?.intel && selectedLead.company.intel.length > 0 && (
-              <div className="mb-4">
-                <p className="text-[10px] text-muted uppercase mb-2">Company intel</p>
-                <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {selectedLead.company.intel.map((i) => (
-                    <div key={i.id} className="text-xs p-2 rounded-lg bg-card border border-border">
-                      <span className="text-accent font-medium">{i.type.replace("_", " ")}</span> — {i.title}
-                      {i.summary && <p className="text-muted mt-1">{i.summary}</p>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {selectedLead.company?.contacts && selectedLead.company.contacts.length > 0 && (
-              <div className="mb-4">
-                <p className="text-[10px] text-muted uppercase mb-2">Contacts at company</p>
-                {selectedLead.company.contacts.map((c) => (
-                  <div key={c.id} className="text-xs py-1.5 border-b border-border/50">
-                    <span className="font-medium">{c.name}</span>
-                    {c.title && <span className="text-muted"> · {c.title}</span>}
-                    {c.email && <a href={`mailto:${c.email}`} className="block text-accent hover:underline">{c.email}</a>}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <button
-              onClick={() => generateOutreach(selectedLead.id)}
-              disabled={generatingOutreach}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-dim disabled:opacity-60"
-            >
-              {generatingOutreach ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
-              Generate outreach email
-            </button>
           </div>
         </div>
+      )}
+
+      {selectedLead && (
+        <LeadDetailPanel
+          lead={selectedLead}
+          onClose={() => setSelectedLead(null)}
+          onStatusChange={updateStatus}
+          onResearch={() => researchLead(selectedLead)}
+          researching={researching}
+          onOutreach={() => generateOutreach(selectedLead.id)}
+          generatingOutreach={generatingOutreach}
+        />
       )}
 
       {selectedCompany && (
-        <div className="fixed inset-0 z-50 flex justify-end">
-          <div className="absolute inset-0 bg-black/50" onClick={() => setSelectedCompany(null)} />
-          <div className="relative w-full max-w-lg bg-background border-l border-border h-full overflow-y-auto p-6 shadow-xl">
-            <div className="flex items-start justify-between mb-4">
-              <div>
-                <h2 className="text-lg font-bold">{selectedCompany.name}</h2>
-                {selectedCompany.website && (
-                  <a href={selectedCompany.website} target="_blank" rel="noopener noreferrer" className="text-xs text-accent hover:underline block">
-                    {selectedCompany.website.replace(/^https?:\/\//, "")}
-                  </a>
-                )}
-                {selectedCompany.careersUrl && (
-                  <a href={selectedCompany.careersUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-muted hover:text-accent block mt-0.5">
-                    Careers page →
-                  </a>
-                )}
-                {selectedCompany.linkedinSearchUrl && (
-                  <a href={selectedCompany.linkedinSearchUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-muted hover:text-accent block mt-0.5">
-                    LinkedIn jobs →
-                  </a>
-                )}
-              </div>
-              <button onClick={() => setSelectedCompany(null)} className="p-2 rounded-lg hover:bg-card-hover">
-                <X className="w-5 h-5" />
+        <CompanyDetailPanel
+          company={selectedCompany}
+          onClose={() => setSelectedCompany(null)}
+          onEnrich={() => enrichCompany(selectedCompany.id)}
+          onSelectLead={(j) => { setSelectedCompany(null); setSelectedLead(j); setTab("openings"); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function PreferencesForm({
+  prefs,
+  onChange,
+  keywordInput,
+  setKeywordInput,
+  locationInput,
+  setLocationInput,
+  onSave,
+  onUpload,
+  uploading,
+  showPresets,
+  toggleRole,
+}: {
+  prefs: JobPreferences;
+  onChange: (p: JobPreferences) => void;
+  keywordInput: string;
+  setKeywordInput: (s: string) => void;
+  locationInput: string;
+  setLocationInput: (s: string) => void;
+  onSave?: () => void;
+  onUpload: (f: File) => void;
+  uploading: boolean;
+  showPresets?: boolean;
+  toggleRole?: (role: string) => void;
+}) {
+  return (
+    <div className="space-y-4">
+      {showPresets && (
+        <div>
+          <p className="text-xs text-muted uppercase mb-2">Target roles</p>
+          <div className="flex flex-wrap gap-1.5">
+            {ROLE_PRESETS.map((role) => (
+              <button
+                key={role}
+                type="button"
+                onClick={() => toggleRole?.(role)}
+                className={`text-xs px-2 py-1 rounded-lg border ${prefs.targetRoles.includes(role) ? "bg-accent/10 text-accent border-accent/30" : "border-border hover:bg-card-hover"}`}
+              >
+                {role}
               </button>
-            </div>
-
-            {selectedCompany.description && <p className="text-sm text-muted mb-4">{selectedCompany.description}</p>}
-
-            {parseTechStack(selectedCompany.techStack).length > 0 && (
-              <div className="mb-4 flex flex-wrap gap-1">
-                {parseTechStack(selectedCompany.techStack).map((t) => (
-                  <span key={t} className="text-[10px] px-2 py-0.5 rounded bg-card border border-border">{t}</span>
-                ))}
-              </div>
-            )}
-
-            <button onClick={() => enrichCompany(selectedCompany.id)} className="w-full mb-4 flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-accent/40 text-accent text-sm hover:bg-accent/10">
-              <RefreshCw className="w-4 h-4" /> Enrich now
-            </button>
-
-            {selectedCompany.intel && selectedCompany.intel.length > 0 && (
-              <div className="mb-4">
-                <p className="text-[10px] text-muted uppercase mb-2">Intel timeline</p>
-                <div className="space-y-2 max-h-48 overflow-y-auto">
-                  {selectedCompany.intel.map((i) => (
-                    <div key={i.id} className="text-xs p-2 rounded-lg bg-card border border-border">
-                      <span className="text-accent">{i.type}</span> — {i.title}
-                      <p className="text-[10px] text-muted mt-0.5">{formatDate(i.capturedAt)}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {selectedCompany.jobLeads && selectedCompany.jobLeads.length > 0 && (
-              <div className="mb-4">
-                <p className="text-[10px] text-muted uppercase mb-2">Open roles ({selectedCompany.jobLeads.length})</p>
-                <div className="max-h-40 overflow-y-auto">
-                  {selectedCompany.jobLeads.map((j) => (
-                    <button
-                      key={j.id}
-                      onClick={() => { setSelectedCompany(null); setSelectedLead(j); setTab("openings"); }}
-                      className="block w-full text-left text-xs py-2 border-b border-border/50 hover:text-accent"
-                    >
-                      {j.title}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {selectedCompany.contacts && selectedCompany.contacts.length > 0 && (
-              <div>
-                <p className="text-[10px] text-muted uppercase mb-2">Contacts ({selectedCompany.contacts.length})</p>
-                <div className="max-h-40 overflow-y-auto">
-                  {selectedCompany.contacts.map((c) => (
-                    <div key={c.id} className="text-xs py-1.5 border-b border-border/50">
-                      {c.name}{c.title ? ` · ${c.title}` : ""}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+            ))}
           </div>
         </div>
       )}
+      {!showPresets && prefs.targetRoles.length > 0 && (
+        <div className="flex flex-wrap gap-1">{prefs.targetRoles.map((r) => <span key={r} className="text-xs px-2 py-0.5 rounded bg-accent/10 text-accent">{r}</span>)}</div>
+      )}
+      <div>
+        <p className="text-xs text-muted uppercase mb-1">Keywords / skills</p>
+        <textarea
+          value={keywordInput || prefs.keywords.join(", ")}
+          onChange={(e) => {
+            setKeywordInput(e.target.value);
+            onChange({ ...prefs, keywords: e.target.value.split(/[,;\n]/).map((k) => k.trim()).filter(Boolean) });
+          }}
+          placeholder="React, Python, Kubernetes, system design..."
+          className="w-full bg-card border border-border rounded-lg px-3 py-2 text-sm min-h-[80px]"
+        />
+      </div>
+      <div>
+        <p className="text-xs text-muted uppercase mb-1">Locations</p>
+        <input
+          value={locationInput || prefs.locations.join(", ")}
+          onChange={(e) => {
+            setLocationInput(e.target.value);
+            onChange({ ...prefs, locations: e.target.value.split(/[,;]/).map((l) => l.trim()).filter(Boolean) });
+          }}
+          placeholder="San Francisco, New York, Remote"
+          className="w-full bg-card border border-border rounded-lg px-3 py-2 text-sm"
+        />
+      </div>
+      <label className="flex items-center gap-2 text-sm cursor-pointer">
+        <input type="checkbox" checked={prefs.remoteOnly} onChange={(e) => onChange({ ...prefs, remoteOnly: e.target.checked })} />
+        Remote only
+      </label>
+      <div>
+        <p className="text-xs text-muted uppercase mb-2">Resume upload</p>
+        <label className="flex items-center gap-2 px-4 py-3 rounded-lg border border-dashed border-border cursor-pointer hover:bg-card-hover">
+          {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+          <span className="text-sm">Upload .txt or .pdf to extract keywords</span>
+          <input type="file" accept=".txt,.pdf" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onUpload(f); }} />
+        </label>
+      </div>
+      {onSave && (
+        <button onClick={onSave} className="px-4 py-2 rounded-lg bg-accent text-white text-sm">Save preferences</button>
+      )}
+    </div>
+  );
+}
+
+function LeadDetailPanel({
+  lead, onClose, onStatusChange, onResearch, researching, onOutreach, generatingOutreach,
+}: {
+  lead: JobLead; onClose: () => void; onStatusChange: (id: string, s: LeadStatus) => void;
+  onResearch: () => void; researching: boolean; onOutreach: () => void; generatingOutreach: boolean;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative w-full max-w-lg bg-background border-l border-border h-full overflow-y-auto p-6 shadow-xl">
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <h2 className="text-lg font-bold">{lead.title}</h2>
+            <p className="text-sm text-muted">{lead.companyName ?? "Unknown"} · Score {lead.relevanceScore ?? 0}</p>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-lg hover:bg-card-hover"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="flex flex-wrap gap-2 mb-4">
+          <select value={lead.status} onChange={(e) => onStatusChange(lead.id, e.target.value as LeadStatus)} className={`text-xs px-2 py-1 rounded-lg border ${STATUS_COLORS[lead.status]}`}>
+            {Object.entries(STATUS_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+          <a href={lead.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 px-3 py-1 rounded-lg border border-border text-xs hover:bg-card-hover">
+            <ExternalLink className="w-3 h-3" /> View posting
+          </a>
+        </div>
+        {lead.description && (
+          <div className="mb-4">
+            <p className="text-[10px] text-muted uppercase mb-1">Description</p>
+            <p className="text-xs whitespace-pre-wrap text-foreground/80 max-h-48 overflow-y-auto">{lead.description.replace(/<[^>]+>/g, " ")}</p>
+          </div>
+        )}
+        {lead.researchSummary ? (
+          <div className="mb-4 p-3 rounded-lg bg-accent/5 border border-accent/20">
+            <p className="text-[10px] text-accent uppercase mb-1 font-semibold">What they want</p>
+            <p className="text-xs whitespace-pre-wrap">{lead.researchSummary}</p>
+          </div>
+        ) : (
+          <button onClick={onResearch} disabled={researching} className="w-full mb-4 flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-accent/40 text-accent text-sm hover:bg-accent/10 disabled:opacity-60">
+            {researching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />} Research lead
+          </button>
+        )}
+        <button onClick={onOutreach} disabled={generatingOutreach} className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-dim disabled:opacity-60">
+          {generatingOutreach ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />} Generate outreach email
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CompanyDetailPanel({
+  company, onClose, onEnrich, onSelectLead,
+}: {
+  company: Company; onClose: () => void; onEnrich: () => void; onSelectLead: (j: JobLead) => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative w-full max-w-lg bg-background border-l border-border h-full overflow-y-auto p-6 shadow-xl">
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <h2 className="text-lg font-bold">{company.name}</h2>
+            {company.isFortune100 && <span className="text-xs text-amber-400">Fortune 100</span>}
+            {company.website && <a href={company.website} target="_blank" rel="noopener noreferrer" className="text-xs text-accent hover:underline block">{company.website.replace(/^https?:\/\//, "")}</a>}
+          </div>
+          <button onClick={onClose} className="p-2 rounded-lg hover:bg-card-hover"><X className="w-5 h-5" /></button>
+        </div>
+        {company.description && <p className="text-sm text-muted mb-4">{company.description}</p>}
+        {parseTechStack(company.techStack).length > 0 && (
+          <div className="mb-4 flex flex-wrap gap-1">{parseTechStack(company.techStack).map((t) => <span key={t} className="text-[10px] px-2 py-0.5 rounded bg-card border border-border">{t}</span>)}</div>
+        )}
+        <button onClick={onEnrich} className="w-full mb-4 flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-accent/40 text-accent text-sm hover:bg-accent/10">
+          <RefreshCw className="w-4 h-4" /> Enrich + find contacts
+        </button>
+        {company.jobLeads && company.jobLeads.length > 0 && (
+          <div className="mb-4">
+            <p className="text-[10px] text-muted uppercase mb-2">Open roles ({company.jobLeads.length})</p>
+            {company.jobLeads.map((j) => (
+              <button key={j.id} onClick={() => onSelectLead(j)} className="block w-full text-left text-xs py-2 border-b border-border/50 hover:text-accent">{j.title}</button>
+            ))}
+          </div>
+        )}
+        {company.contacts && company.contacts.length > 0 && (
+          <div>
+            <p className="text-[10px] text-muted uppercase mb-2">Contacts ({company.contacts.length})</p>
+            {company.contacts.map((c) => (
+              <div key={c.id} className="text-xs py-1.5 border-b border-border/50">
+                {c.name}{c.title ? ` · ${c.title}` : ""}
+                {c.email && <a href={`mailto:${c.email}`} className="block text-accent">{c.email}</a>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -8,46 +8,83 @@ export async function GET(request: NextRequest) {
   const source = searchParams.get("source") as LeadSource | null;
   const companyId = searchParams.get("companyId");
   const q = searchParams.get("q");
+  const minRelevance = parseInt(searchParams.get("minRelevance") ?? "0", 10);
+  const postedWithin = parseInt(searchParams.get("postedWithin") ?? "0", 10);
+  const remoteOnly = searchParams.get("remoteOnly") === "true";
+  const fortune100 = searchParams.get("fortune100") === "true";
+  const shortlist = searchParams.get("shortlist") === "true";
+  const roles = searchParams.get("roles")?.split(",").filter(Boolean) ?? [];
 
-  const where: Record<string, unknown> = {};
+  const where: Record<string, unknown> = {
+    status: { in: ["NEW", "RESEARCHING", "READY_OUTREACH"] },
+  };
   if (status) where.status = status;
   if (source) where.source = source;
   if (companyId) where.companyId = companyId;
-  if (q) {
+  if (minRelevance > 0) where.relevanceScore = { gte: minRelevance };
+  if (remoteOnly) where.remote = true;
+  if (fortune100) where.isFortune100 = true;
+  if (postedWithin > 0) {
+    const cutoff = new Date(Date.now() - postedWithin * 24 * 60 * 60 * 1000);
     where.OR = [
-      { title: { contains: q } },
-      { companyName: { contains: q } },
-      { description: { contains: q } },
+      { postedAt: { gte: cutoff } },
+      { postedAt: null, capturedAt: { gte: cutoff } },
+    ];
+  }
+  if (q) {
+    where.AND = [
+      {
+        OR: [
+          { title: { contains: q } },
+          { companyName: { contains: q } },
+          { description: { contains: q } },
+        ],
+      },
+    ];
+  }
+  if (roles.length > 0) {
+    where.AND = [
+      ...((where.AND as unknown[]) ?? []),
+      {
+        OR: roles.map((role) => ({ title: { contains: role } })),
+      },
     ];
   }
 
   const todayStart = new Date(new Date().setHours(0, 0, 0, 0));
-
-  const limit = Math.min(parseInt(searchParams.get("limit") ?? "100", 10), 500);
+  const limit = shortlist ? 50 : Math.min(parseInt(searchParams.get("limit") ?? "200", 10), 500);
   const offset = parseInt(searchParams.get("offset") ?? "0", 10);
 
-  const [leads, settings, totalOpen, newToday, companiesTracked, contactsFound, totalMatching] = await Promise.all([
-    prisma.jobLead.findMany({
-      where,
-      include: {
-        company: {
-          include: {
-            intel: { orderBy: { capturedAt: "desc" }, take: 5 },
-            contacts: { take: 5 },
+  const [leads, settings, totalOpen, newToday, companiesTracked, contactsFound, totalMatching] =
+    await Promise.all([
+      prisma.jobLead.findMany({
+        where,
+        include: {
+          company: {
+            include: {
+              intel: { orderBy: { capturedAt: "desc" }, take: 5 },
+              contacts: { take: 5 },
+            },
           },
         },
-      },
-      orderBy: [{ capturedAt: "desc" }],
-      take: limit,
-      skip: offset,
-    }),
-    prisma.appSettings.findUnique({ where: { id: "default" } }),
-    prisma.jobLead.count({ where: { status: { in: ["NEW", "RESEARCHING", "READY_OUTREACH"] } } }),
-    prisma.jobLead.count({ where: { status: "NEW", capturedAt: { gte: todayStart } } }),
-    prisma.company.count(),
-    prisma.contact.count(),
-    prisma.jobLead.count({ where }),
-  ]);
+        orderBy: [{ relevanceScore: "desc" }, { postedAt: "desc" }, { capturedAt: "desc" }],
+        take: limit,
+        skip: offset,
+      }),
+      prisma.appSettings.findUnique({ where: { id: "default" } }),
+      prisma.jobLead.count({ where: { status: { in: ["NEW", "RESEARCHING", "READY_OUTREACH"] } } }),
+      prisma.jobLead.count({ where: { status: "NEW", capturedAt: { gte: todayStart } } }),
+      prisma.company.count(),
+      prisma.contact.count(),
+      prisma.jobLead.count({ where }),
+    ]);
+
+  let preferences = null;
+  try {
+    preferences = settings?.jobPreferences ? JSON.parse(settings.jobPreferences) : null;
+  } catch {
+    preferences = null;
+  }
 
   return NextResponse.json({
     leads,
@@ -55,6 +92,12 @@ export async function GET(request: NextRequest) {
     limit,
     offset,
     lastScanAt: settings?.lastLeadsScanAt ?? null,
+    scanSettings: {
+      leadsAutoScanIntervalMinutes: settings?.leadsAutoScanIntervalMinutes ?? 5,
+      leadsMaxAgeDays: settings?.leadsMaxAgeDays ?? 45,
+      leadsAutoScanEnabled: settings?.leadsAutoScanEnabled ?? true,
+    },
+    preferences,
     stats: { totalOpen, newToday, companiesTracked, contactsFound },
   });
 }

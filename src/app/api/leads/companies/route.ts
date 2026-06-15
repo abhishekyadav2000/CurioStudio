@@ -1,24 +1,52 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { FORTUNE_COMPANY_NAMES } from "@/lib/leads/fortune-careers";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const { searchParams } = request.nextUrl;
+  const fortune100Only = searchParams.get("fortune100") === "true";
+  const maxAgeDays = parseInt(searchParams.get("maxAgeDays") ?? "45", 10);
+  const freshCutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
+
   const companies = await prisma.company.findMany({
     include: {
       _count: { select: { jobLeads: true, intel: true, contacts: true } },
       jobLeads: {
-        where: { status: "NEW" },
-        select: { id: true },
+        where: {
+          status: { in: ["NEW", "RESEARCHING", "READY_OUTREACH"] },
+          OR: [
+            { postedAt: { gte: freshCutoff } },
+            { postedAt: null, capturedAt: { gte: freshCutoff } },
+          ],
+        },
+        select: { id: true, relevanceScore: true },
       },
     },
-    orderBy: { name: "asc" },
-    take: 50,
+    take: fortune100Only ? 100 : 200,
   });
 
-  const enriched = companies.map((c) => ({
-    ...c,
-    newLeadCount: c.jobLeads.length,
-    jobLeads: undefined,
-  }));
+  const enriched = companies
+    .map((c) => {
+      const freshRoles = c.jobLeads.length;
+      const avgRelevance =
+        c.jobLeads.length > 0
+          ? Math.round(c.jobLeads.reduce((s, j) => s + j.relevanceScore, 0) / c.jobLeads.length)
+          : 0;
+      const isFortune100 = FORTUNE_COMPANY_NAMES.has(c.name);
+      return {
+        ...c,
+        freshRoleCount: freshRoles,
+        avgRelevance,
+        isFortune100,
+        newLeadCount: freshRoles,
+        jobLeads: undefined,
+      };
+    })
+    .filter((c) => !fortune100Only || c.isFortune100)
+    .sort((a, b) => {
+      if (b.freshRoleCount !== a.freshRoleCount) return b.freshRoleCount - a.freshRoleCount;
+      return b.avgRelevance - a.avgRelevance;
+    });
 
   return NextResponse.json({ companies: enriched });
 }
