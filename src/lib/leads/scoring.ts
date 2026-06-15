@@ -70,10 +70,11 @@ export function scoreLead(
   lead: Pick<
     JobLead,
     "title" | "description" | "companyName" | "location" | "remote" | "postedAt" | "capturedAt" | "isFortune100"
-  >,
+  > & { actualPostedAt?: Date | null },
   preferences: JobPreferences = DEFAULT_PREFERENCES
 ): number {
   let score = 0;
+  const effectivePostedAt = lead.actualPostedAt ?? lead.postedAt;
 
   // Title / role match (0–35)
   if (preferences.targetRoles.length > 0) {
@@ -106,7 +107,7 @@ export function scoreLead(
   }
 
   // Recency (0–20)
-  score += recencyBonus(lead.postedAt, lead.capturedAt);
+  score += recencyBonus(effectivePostedAt, lead.capturedAt);
 
   // Company tier (0–15)
   score += companyTierBonus(lead.companyName, lead.isFortune100);

@@ -284,6 +284,18 @@ export async function enrichCompany(companyId: string): Promise<EnrichResult> {
     console.error(`[enrich] findContacts for ${company.name}:`, err);
   }
 
+  try {
+    const { discoverTeam } = await import("./team-discovery");
+    const job = await prisma.jobLead.findFirst({
+      where: { companyId, status: { not: "ARCHIVED" } },
+      orderBy: { relevanceScore: "desc" },
+    });
+    const teamResult = await discoverTeam(companyId, job?.title);
+    contactsAdded += teamResult.contactsAdded;
+  } catch (err) {
+    console.error(`[enrich] team discovery for ${company.name}:`, err);
+  }
+
   return { companyId, contactsAdded, intelAdded, fieldsUpdated };
 }
 

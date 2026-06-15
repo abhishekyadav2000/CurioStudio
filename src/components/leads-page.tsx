@@ -24,9 +24,14 @@ import {
   ToggleLeft,
   ToggleRight,
   Zap,
+  Network,
+  Calendar,
+  CheckCircle2,
+  XCircle,
 } from "lucide-react";
 import { Breadcrumbs, PageHeader } from "@/components/page-header";
 import { ROLE_PRESETS } from "@/lib/leads/scoring";
+import { InsiderMap, type MapNodeData } from "@/components/insider-map";
 
 const SCROLL_LIST = "rounded-xl border border-border bg-card/30 max-h-[min(520px,60vh)] overflow-y-auto";
 const PAGE_SIZE = 25;
@@ -35,7 +40,7 @@ type LeadStatus = "NEW" | "RESEARCHING" | "READY_OUTREACH" | "APPLIED" | "ARCHIV
 type LeadSource =
   | "HN" | "REMOTEOK" | "GREENHOUSE" | "GITHUB" | "MANUAL" | "FORTUNE_CAREERS"
   | "WELLFOUND" | "WWR" | "BUILTIN" | "INDEED" | "LINKEDIN" | "ASHBY" | "LEVER";
-type Tab = "shortlist" | "openings" | "companies" | "contacts" | "preferences" | "roadmap" | "outreach";
+type Tab = "shortlist" | "openings" | "companies" | "contacts" | "map" | "outreach-prep" | "preferences" | "roadmap" | "outreach";
 
 interface JobPreferences {
   targetRoles: string[];
@@ -69,6 +74,7 @@ interface Contact {
   linkedinUrl?: string | null;
   source: string;
   confidence: "HIGH" | "MEDIUM" | "LOW";
+  reportsToId?: string | null;
   company?: { id: string; name: string; _count?: { jobLeads: number } };
 }
 
@@ -106,6 +112,9 @@ interface JobLead {
   location?: string | null;
   remote?: boolean | null;
   postedAt?: string | null;
+  actualPostedAt?: string | null;
+  verifiedAt?: string | null;
+  isAlive?: boolean | null;
   description?: string | null;
   researchSummary?: string | null;
   relevanceScore?: number;
@@ -113,6 +122,28 @@ interface JobLead {
   status: LeadStatus;
   capturedAt: string;
   company?: Company | null;
+}
+
+interface OutreachBatch {
+  id: string;
+  name: string;
+  status: string;
+  scheduledFor?: string | null;
+  meetingDate?: string | null;
+  meetingAttendees?: string[];
+  notes?: string | null;
+  projectId?: string | null;
+  items: {
+    contactId?: string;
+    leadId?: string;
+    contactName?: string;
+    contactEmail?: string;
+    contactTitle?: string;
+    companyName?: string;
+    roleTitle?: string;
+    talkingPoints: string[];
+  }[];
+  createdAt: string;
 }
 
 interface OutreachDraft {
@@ -172,12 +203,19 @@ function formatRelative(iso?: string | null) {
   return d.toLocaleString();
 }
 
-function freshnessBadge(iso?: string | null) {
-  if (!iso) return { label: "Unknown", cls: "bg-muted/10 text-muted" };
-  const days = (Date.now() - new Date(iso).getTime()) / (24 * 60 * 60 * 1000);
+function freshnessBadge(iso?: string | null, actualIso?: string | null) {
+  const dateIso = actualIso ?? iso;
+  if (!dateIso) return { label: "Unknown", cls: "bg-muted/10 text-muted" };
+  const days = (Date.now() - new Date(dateIso).getTime()) / (24 * 60 * 60 * 1000);
   if (days <= 7) return { label: `${Math.max(1, Math.round(days))}d ago`, cls: "bg-emerald-500/10 text-emerald-400" };
   if (days <= 30) return { label: `${Math.round(days)}d ago`, cls: "bg-amber-500/10 text-amber-400" };
   return { label: `${Math.round(days)}d+`, cls: "bg-red-500/10 text-red-400" };
+}
+
+function verifyBadge(lead: JobLead) {
+  if (lead.isAlive === false) return { label: "Link dead ✗", cls: "bg-red-500/10 text-red-400" };
+  if (lead.verifiedAt) return { label: "Verified ✓", cls: "bg-emerald-500/10 text-emerald-400" };
+  return null;
 }
 
 function parseTechStack(raw?: string | null): string[] {
@@ -213,19 +251,28 @@ export function LeadsPageClient({ initialTab = "shortlist" }: LeadsPageClientPro
   const [contactCompanyFilter, setContactCompanyFilter] = useState<string>("ALL");
   const [sourceFilter, setSourceFilter] = useState<LeadSource | "ALL">("ALL");
   const [minRelevance, setMinRelevance] = useState(0);
-  const [postedWithin, setPostedWithin] = useState(45);
+  const [postedWithin, setPostedWithin] = useState(30);
   const [remoteOnly, setRemoteOnly] = useState(false);
   const [fortune100Filter, setFortune100Filter] = useState(false);
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [showPrefsModal, setShowPrefsModal] = useState(false);
   const [prefsDraft, setPrefsDraft] = useState<JobPreferences>({ targetRoles: [], keywords: [], locations: [], remoteOnly: false, excludeCompanies: [] });
+  const [prefsMessage, setPrefsMessage] = useState<string | null>(null);
   const [keywordInput, setKeywordInput] = useState("");
   const [locationInput, setLocationInput] = useState("");
   const [uploadingResume, setUploadingResume] = useState(false);
   const [roadmapPhases, setRoadmapPhases] = useState<RoadmapPhase[]>([]);
   const [roadmapProgress, setRoadmapProgress] = useState<Record<string, boolean>>({});
   const [fortune100Companies, setFortune100Companies] = useState(false);
+  const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(new Set());
+  const [selectedContactIds, setSelectedContactIds] = useState<Set<string>>(new Set());
+  const [outreachBatches, setOutreachBatches] = useState<OutreachBatch[]>([]);
+  const [batchName, setBatchName] = useState("");
+  const [meetingDate, setMeetingDate] = useState("");
+  const [meetingAttendees, setMeetingAttendees] = useState("");
+  const [mapSelected, setMapSelected] = useState<MapNodeData | null>(null);
+  const [creatingBatch, setCreatingBatch] = useState(false);
   const scanIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [, setTick] = useState(0);
 
@@ -249,13 +296,14 @@ export function LeadsPageClient({ initialTab = "shortlist" }: LeadsPageClientPro
     setLoading(true);
     const isShortlist = tab === "shortlist";
     const query = buildLeadsQuery(isShortlist);
-    const [leadsRes, companiesRes, contactsRes, outreachRes, prefsRes, roadmapRes] = await Promise.all([
+    const [leadsRes, companiesRes, contactsRes, outreachRes, prefsRes, roadmapRes, batchesRes] = await Promise.all([
       fetch(`/api/leads?${query}`).then((r) => r.json()),
       fetch(`/api/leads/companies${fortune100Companies ? "?fortune100=true" : ""}`).then((r) => r.json()),
       fetch("/api/leads/contacts").then((r) => r.json()),
       fetch("/api/leads/outreach").then((r) => r.json()),
       fetch("/api/leads/preferences").then((r) => r.json()),
       fetch("/api/leads/roadmap").then((r) => r.json()),
+      fetch("/api/leads/outreach-batches").then((r) => r.json()),
     ]);
 
     setLeads(leadsRes.leads ?? []);
@@ -268,10 +316,14 @@ export function LeadsPageClient({ initialTab = "shortlist" }: LeadsPageClientPro
     setDrafts(outreachRes.drafts ?? []);
     if (prefsRes.preferences) {
       setPreferences(prefsRes.preferences);
+      setPrefsDraft(prefsRes.preferences);
+      setKeywordInput(prefsRes.preferences.keywords?.join(", ") ?? "");
+      setLocationInput(prefsRes.preferences.locations?.join(", ") ?? "");
       if (!prefsRes.preferences.preferencesSet) setShowPrefsModal(true);
     }
     if (roadmapRes.phases) setRoadmapPhases(roadmapRes.phases);
     if (roadmapRes.progress) setRoadmapProgress(roadmapRes.progress);
+    setOutreachBatches(batchesRes.batches ?? []);
     setLoading(false);
   }, [tab, buildLeadsQuery, fortune100Companies]);
 
@@ -346,14 +398,44 @@ export function LeadsPageClient({ initialTab = "shortlist" }: LeadsPageClientPro
   }
 
   async function savePreferences() {
-    await fetch("/api/leads/preferences", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ preferences: prefsDraft }),
-    });
-    setPreferences(prefsDraft);
-    setShowPrefsModal(false);
-    await load();
+    setPrefsMessage(null);
+    try {
+      const res = await fetch("/api/leads/preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ preferences: { ...prefsDraft, preferencesSet: true } }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Save failed");
+      const saved = data.preferences ?? prefsDraft;
+      setPreferences(saved);
+      setPrefsDraft(saved);
+      setPrefsMessage("Preferences saved");
+      setShowPrefsModal(false);
+      await load();
+    } catch (err) {
+      setPrefsMessage(err instanceof Error ? err.message : "Save failed");
+    }
+  }
+
+  async function savePreferencesFromTab() {
+    setPrefsMessage(null);
+    try {
+      const res = await fetch("/api/leads/preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ preferences: { ...prefsDraft, preferencesSet: true } }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Save failed");
+      const saved = data.preferences ?? prefsDraft;
+      setPreferences(saved);
+      setPrefsDraft(saved);
+      setPrefsMessage("Preferences saved");
+      await load();
+    } catch (err) {
+      setPrefsMessage(err instanceof Error ? err.message : "Save failed");
+    }
   }
 
   async function uploadResume(file: File) {
@@ -434,6 +516,72 @@ export function LeadsPageClient({ initialTab = "shortlist" }: LeadsPageClientPro
     setTimeout(() => setCopiedId(null), 2000);
   }
 
+  function toggleLeadSelection(id: string) {
+    setSelectedLeadIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleContactSelection(id: string) {
+    setSelectedContactIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function createOutreachBatch() {
+    if (!batchName.trim()) return;
+    setCreatingBatch(true);
+    try {
+      const res = await fetch("/api/leads/outreach-batches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: batchName.trim(),
+          contactIds: [...selectedContactIds],
+          leadIds: [...selectedLeadIds],
+          meetingDate: meetingDate || undefined,
+          meetingAttendees: meetingAttendees
+            ? meetingAttendees.split(/[,;\n]/).map((s) => s.trim()).filter(Boolean)
+            : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to create batch");
+      setBatchName("");
+      setMeetingDate("");
+      setMeetingAttendees("");
+      setSelectedLeadIds(new Set());
+      setSelectedContactIds(new Set());
+      setTab("outreach-prep");
+      await load();
+    } finally {
+      setCreatingBatch(false);
+    }
+  }
+
+  async function createContentForBatch(batchId: string) {
+    const res = await fetch("/api/leads/outreach-batches", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "createContent", batchId }),
+    });
+    const data = await res.json();
+    if (res.ok && data.projectId) {
+      window.location.href = `/studio/${data.projectId}`;
+    }
+  }
+
+  function copyBatchEmails(batch: OutreachBatch) {
+    const emails = batch.items.map((i) => i.contactEmail).filter(Boolean).join(", ");
+    if (emails) navigator.clipboard.writeText(emails);
+  }
+
   function toggleRolePreset(role: string) {
     setPrefsDraft((p) => ({
       ...p,
@@ -455,38 +603,52 @@ export function LeadsPageClient({ initialTab = "shortlist" }: LeadsPageClientPro
     { key: "openings", label: "All Openings", icon: Briefcase },
     { key: "companies", label: "Companies", icon: Building2 },
     { key: "contacts", label: "Contacts", icon: Users },
+    { key: "map", label: "Insider Map", icon: Network },
+    { key: "outreach-prep", label: "Outreach Prep", icon: Calendar },
     { key: "preferences", label: "Preferences", icon: Settings2 },
     { key: "roadmap", label: "Roadmap", icon: Map },
     { key: "outreach", label: "Outreach", icon: Mail },
   ];
 
   function LeadRow({ lead }: { lead: JobLead }) {
-    const fresh = freshnessBadge(lead.postedAt ?? lead.capturedAt);
+    const fresh = freshnessBadge(lead.postedAt ?? lead.capturedAt, lead.actualPostedAt);
+    const verified = verifyBadge(lead);
+    const selected = selectedLeadIds.has(lead.id);
     return (
-      <button
-        key={lead.id}
-        onClick={() => setSelectedLead(lead)}
-        className="w-full text-left p-3 rounded-xl bg-card border border-border hover:border-accent/30 transition-colors flex items-center gap-3"
-      >
-        <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center shrink-0">
-          <Briefcase className="w-4 h-4 text-accent" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-medium text-sm">{lead.title}</span>
-            {lead.relevanceScore != null && lead.relevanceScore > 0 && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent font-semibold">{lead.relevanceScore}</span>
-            )}
-            {lead.remote && <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent">Remote</span>}
-            {lead.isFortune100 && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">F100</span>}
-            <span className={`text-[10px] px-1.5 py-0.5 rounded ${fresh.cls}`}>{fresh.label}</span>
+      <div className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => toggleLeadSelection(lead.id)}
+          className="shrink-0 ml-1"
+          title="Add to outreach batch"
+        />
+        <button
+          key={lead.id}
+          onClick={() => setSelectedLead(lead)}
+          className="flex-1 text-left p-3 rounded-xl bg-card border border-border hover:border-accent/30 transition-colors flex items-center gap-3"
+        >
+          <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center shrink-0">
+            <Briefcase className="w-4 h-4 text-accent" />
           </div>
-          <p className="text-xs text-muted mt-0.5 truncate">
-            {lead.companyName ?? "Unknown"} · {SOURCE_LABELS[lead.source]} · {formatDate(lead.postedAt ?? lead.capturedAt)}
-          </p>
-        </div>
-        <ChevronRight className="w-4 h-4 text-muted shrink-0" />
-      </button>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-medium text-sm">{lead.title}</span>
+              {lead.relevanceScore != null && lead.relevanceScore > 0 && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent font-semibold">{lead.relevanceScore}</span>
+              )}
+              {lead.remote && <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent">Remote</span>}
+              {lead.isFortune100 && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">F100</span>}
+              <span className={`text-[10px] px-1.5 py-0.5 rounded ${fresh.cls}`}>{fresh.label}</span>
+              {verified && <span className={`text-[10px] px-1.5 py-0.5 rounded ${verified.cls}`}>{verified.label}</span>}
+            </div>
+            <p className="text-xs text-muted mt-0.5 truncate">
+              {lead.companyName ?? "Unknown"} · {SOURCE_LABELS[lead.source]} · {formatDate(lead.actualPostedAt ?? lead.postedAt ?? lead.capturedAt)}
+            </p>
+          </div>
+          <ChevronRight className="w-4 h-4 text-muted shrink-0" />
+        </button>
+      </div>
     );
   }
 
@@ -587,7 +749,7 @@ export function LeadsPageClient({ initialTab = "shortlist" }: LeadsPageClientPro
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-4">
           {[
             { label: "Companies tracked", value: stats.companiesTracked },
-            { label: "Open roles", value: stats.totalOpen, accent: true },
+            { label: "Fresh open roles", value: stats.totalOpen, accent: true },
             { label: "New today", value: stats.newToday, accent: stats.newToday > 0 },
             { label: "Contacts found", value: stats.contactsFound },
           ].map((s) => (
@@ -623,7 +785,24 @@ export function LeadsPageClient({ initialTab = "shortlist" }: LeadsPageClientPro
               <div className="flex flex-col min-h-0 flex-1">
                 {filterBar}
                 {tab === "shortlist" && (
-                  <p className="text-xs text-muted mb-2">Top {leads.length} matches for your preferences · sorted by relevance</p>
+                  <p className="text-xs text-muted mb-2">Fresh verified roles (30d, score ≥40) · {selectedLeadIds.size} selected for outreach</p>
+                )}
+                {(tab === "shortlist" || tab === "openings") && (selectedLeadIds.size > 0 || selectedContactIds.size > 0) && (
+                  <div className="flex flex-wrap items-center gap-2 mb-2 p-2 rounded-lg bg-accent/5 border border-accent/20">
+                    <input
+                      value={batchName}
+                      onChange={(e) => setBatchName(e.target.value)}
+                      placeholder="Outreach batch name..."
+                      className="flex-1 min-w-[160px] bg-card border border-border rounded-lg px-2 py-1 text-xs"
+                    />
+                    <button
+                      onClick={createOutreachBatch}
+                      disabled={creatingBatch || !batchName.trim()}
+                      className="px-3 py-1 rounded-lg bg-accent text-white text-xs disabled:opacity-50"
+                    >
+                      {creatingBatch ? "Creating..." : `Add to batch (${selectedLeadIds.size + selectedContactIds.size})`}
+                    </button>
+                  </div>
                 )}
                 {leads.length === 0 ? (
                   <div className="p-10 rounded-xl border border-dashed border-border text-center shrink-0">
@@ -695,6 +874,7 @@ export function LeadsPageClient({ initialTab = "shortlist" }: LeadsPageClientPro
                     <table className="w-full text-sm">
                       <thead className="bg-card border-b border-border sticky top-0">
                         <tr className="text-left text-xs text-muted">
+                          <th className="p-2 font-medium w-8" />
                           <th className="p-2 font-medium">Name</th>
                           <th className="p-2 font-medium">Title</th>
                           <th className="p-2 font-medium">Company</th>
@@ -705,6 +885,13 @@ export function LeadsPageClient({ initialTab = "shortlist" }: LeadsPageClientPro
                       <tbody>
                         {filteredContacts.map((c) => (
                           <tr key={c.id} className="border-b border-border/50 hover:bg-card/50">
+                            <td className="p-2">
+                              <input
+                                type="checkbox"
+                                checked={selectedContactIds.has(c.id)}
+                                onChange={() => toggleContactSelection(c.id)}
+                              />
+                            </td>
                             <td className="p-2 font-medium">{c.name}</td>
                             <td className="p-2 text-muted">{c.title ?? "—"}</td>
                             <td className="p-2 text-muted">{c.company?.name ?? "—"}</td>
@@ -728,21 +915,141 @@ export function LeadsPageClient({ initialTab = "shortlist" }: LeadsPageClientPro
               </div>
             )}
 
+            {tab === "map" && (
+              <div className="flex flex-col min-h-0 flex-1 gap-3">
+                <InsiderMap onSelectNode={setMapSelected} />
+                {mapSelected && (
+                  <div className="p-3 rounded-xl bg-card border border-border shrink-0">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="font-medium text-sm">{mapSelected.label}</p>
+                        <p className="text-xs text-muted">{mapSelected.title ?? mapSelected.nodeType}</p>
+                        {mapSelected.email && <p className="text-xs text-accent">{mapSelected.email}</p>}
+                      </div>
+                      <button onClick={() => setMapSelected(null)} className="p-1 rounded hover:bg-card-hover"><X className="w-4 h-4" /></button>
+                    </div>
+                    <div className="flex gap-2 mt-2">
+                      {mapSelected.leadId && (
+                        <button
+                          onClick={() => {
+                            const lead = leads.find((l) => l.id === mapSelected.leadId);
+                            if (lead) setSelectedLead(lead);
+                          }}
+                          className="px-2 py-1 rounded-lg border border-border text-xs hover:bg-card-hover"
+                        >
+                          View role
+                        </button>
+                      )}
+                      {mapSelected.companyId && (
+                        <button onClick={() => openCompanyProfile(mapSelected.companyId!)} className="px-2 py-1 rounded-lg border border-border text-xs hover:bg-card-hover">
+                          Company
+                        </button>
+                      )}
+                      {mapSelected.contactId && (
+                        <button
+                          onClick={() => {
+                            toggleContactSelection(mapSelected.contactId!);
+                            setTab("outreach-prep");
+                          }}
+                          className="px-2 py-1 rounded-lg bg-accent/10 text-accent text-xs"
+                        >
+                          Add to outreach
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {tab === "outreach-prep" && (
+              <div className={`${SCROLL_LIST} flex-1 min-h-0`}>
+                <div className="p-4 space-y-4">
+                  <div className="p-3 rounded-xl bg-card border border-border space-y-2">
+                    <p className="text-sm font-medium">Create outreach batch</p>
+                    <input
+                      value={batchName}
+                      onChange={(e) => setBatchName(e.target.value)}
+                      placeholder="Batch name (e.g. Tomorrow's meetings)"
+                      className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm"
+                    />
+                    <input
+                      type="datetime-local"
+                      value={meetingDate}
+                      onChange={(e) => setMeetingDate(e.target.value)}
+                      className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm"
+                    />
+                    <input
+                      value={meetingAttendees}
+                      onChange={(e) => setMeetingAttendees(e.target.value)}
+                      placeholder="Meeting attendees (comma-separated emails)"
+                      className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm"
+                    />
+                    <p className="text-xs text-muted">
+                      Selected: {selectedLeadIds.size} leads, {selectedContactIds.size} contacts
+                    </p>
+                    <button
+                      onClick={createOutreachBatch}
+                      disabled={creatingBatch || !batchName.trim()}
+                      className="px-4 py-2 rounded-lg bg-accent text-white text-sm disabled:opacity-50"
+                    >
+                      {creatingBatch ? "Creating..." : "Create outreach batch"}
+                    </button>
+                  </div>
+
+                  {outreachBatches.length === 0 ? (
+                    <p className="text-sm text-muted text-center py-8">No outreach batches yet. Select leads/contacts and create a batch.</p>
+                  ) : (
+                    outreachBatches.map((batch) => (
+                      <div key={batch.id} className="p-4 rounded-xl bg-card border border-border">
+                        <div className="flex items-start justify-between gap-2 mb-2">
+                          <div>
+                            <p className="font-medium text-sm">{batch.name}</p>
+                            <p className="text-xs text-muted">{batch.status} · {batch.items.length} targets</p>
+                            {batch.meetingDate && <p className="text-xs text-muted">Meeting: {formatDate(batch.meetingDate)}</p>}
+                          </div>
+                          <div className="flex gap-1">
+                            <button onClick={() => copyBatchEmails(batch)} className="px-2 py-1 rounded-lg border border-border text-xs">Copy emails</button>
+                            <button onClick={() => createContentForBatch(batch.id)} className="px-2 py-1 rounded-lg bg-accent/10 text-accent text-xs">Create content</button>
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          {batch.items.map((item, i) => (
+                            <div key={i} className="p-2 rounded-lg bg-background border border-border/50 text-xs">
+                              <p className="font-medium">{item.contactName ?? item.roleTitle} @ {item.companyName}</p>
+                              {item.contactEmail && <p className="text-accent">{item.contactEmail}</p>}
+                              <ul className="mt-1 text-muted list-disc list-inside">
+                                {item.talkingPoints.slice(0, 3).map((tp, j) => <li key={j}>{tp}</li>)}
+                              </ul>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+
             {tab === "preferences" && (
               <div className="flex-1 min-h-0 overflow-y-auto space-y-4 p-2">
+                {prefsMessage && (
+                  <p className={`text-xs p-2 rounded-lg ${prefsMessage.includes("saved") ? "text-emerald-400 bg-emerald-500/10" : "text-red-400 bg-red-500/10"}`}>
+                    {prefsMessage}
+                  </p>
+                )}
                 <PreferencesForm
-                  prefs={preferences}
+                  prefs={prefsDraft}
                   onChange={setPrefsDraft}
                   keywordInput={keywordInput}
                   setKeywordInput={setKeywordInput}
                   locationInput={locationInput}
                   setLocationInput={setLocationInput}
-                  onSave={async () => {
-                    await fetch("/api/leads/preferences", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ preferences: preferences }) });
-                    await load();
-                  }}
+                  onSave={savePreferencesFromTab}
                   onUpload={uploadResume}
                   uploading={uploadingResume}
+                  showPresets
+                  toggleRole={toggleRolePreset}
                 />
               </div>
             )}
@@ -832,6 +1139,9 @@ export function LeadsPageClient({ initialTab = "shortlist" }: LeadsPageClientPro
               toggleRole={toggleRolePreset}
             />
             <div className="flex gap-2 mt-4">
+              {prefsMessage && (
+                <p className={`text-xs mb-2 w-full ${prefsMessage.includes("saved") ? "text-emerald-400" : "text-red-400"}`}>{prefsMessage}</p>
+              )}
               <button onClick={savePreferences} className="flex-1 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium">Save preferences</button>
               <button onClick={() => setShowPrefsModal(false)} className="px-4 py-2 rounded-lg border border-border text-sm">Skip</button>
             </div>

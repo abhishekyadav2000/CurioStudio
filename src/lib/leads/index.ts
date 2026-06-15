@@ -39,6 +39,16 @@ export { researchLead } from "./research";
 export { generateOutreachDraft } from "./outreach";
 export { parsePreferences, scoreLead, DEFAULT_PREFERENCES, ROLE_PRESETS } from "./scoring";
 export { pruneStaleLeads } from "./prune";
+export { verifyJobLead, verifyJobLeads } from "./verify-posting";
+export { discoverTeam, discoverTeamsForRecentCompanies } from "./team-discovery";
+export {
+  createOutreachBatch,
+  listOutreachBatches,
+  getOutreachBatch,
+  updateOutreachBatch,
+  linkBatchToProject,
+  createContentProjectForBatch,
+} from "./outreach-batch";
 
 export interface ScanSettings {
   leadsAutoScanIntervalMinutes: number;
@@ -195,6 +205,9 @@ export interface ScanResult {
   rejected: number;
   pruned: number;
   rescored: number;
+  verified: number;
+  deadLinks: number;
+  archivedDead: number;
   total: number;
   bySource: Record<string, number>;
   lastScanAt: Date;
@@ -274,6 +287,7 @@ export async function fetchAllLeads(): Promise<ScanResult> {
         location: sanitized.location,
         remote: sanitized.remote,
         postedAt: sanitized.postedAt,
+        actualPostedAt: sanitized.postedAt,
         description: sanitized.description,
         relevanceScore,
         isFortune100,
@@ -281,10 +295,32 @@ export async function fetchAllLeads(): Promise<ScanResult> {
       },
     });
     added++;
+
+    // Verify newly added lead in background (best-effort)
+    try {
+      const created = await prisma.jobLead.findUnique({ where: { url: sanitized.url } });
+      if (created) {
+        const { verifyJobLead } = await import("./verify-posting");
+        await verifyJobLead(created.id);
+      }
+    } catch {
+      // non-blocking
+    }
   }
 
   const pruneResult = await pruneStaleLeads(maxAgeDays);
   const rescored = await rescoreAllOpenLeads(preferences);
+
+  // Verify new and recent leads; archive dead links
+  const { verifyJobLeads } = await import("./verify-posting");
+  const verifyResult = await verifyJobLeads(undefined, 30);
+
+  const { discoverTeamsForRecentCompanies } = await import("./team-discovery");
+  try {
+    await discoverTeamsForRecentCompanies(3);
+  } catch (err) {
+    console.error("[leads] team discovery:", err);
+  }
 
   const lastScanAt = new Date();
   await prisma.appSettings.upsert({
@@ -317,7 +353,7 @@ export async function fetchAllLeads(): Promise<ScanResult> {
     }
   }
 
-  const message = `Added ${added} fresh · Pruned ${pruneResult.archived} stale · Skipped ${skipped + rejected} low-quality`;
+  const message = `Added ${added} fresh · Pruned ${pruneResult.archived} stale · Verified ${verifyResult.verified} (${verifyResult.dead} dead) · Skipped ${skipped + rejected} low-quality`;
 
   return {
     added,
@@ -325,6 +361,9 @@ export async function fetchAllLeads(): Promise<ScanResult> {
     rejected,
     pruned: pruneResult.archived,
     rescored,
+    verified: verifyResult.verified,
+    deadLinks: verifyResult.dead,
+    archivedDead: verifyResult.archived,
     total: raw.length,
     bySource,
     lastScanAt,

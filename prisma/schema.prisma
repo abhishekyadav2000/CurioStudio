@@ -380,6 +380,9 @@ model Contact {
   twitterUrl  String?
   source      String
   confidence  ContactConfidence @default(LOW)
+  reportsToId String?
+  reportsTo   Contact?          @relation("ContactReportsTo", fields: [reportsToId], references: [id], onDelete: SetNull)
+  reports     Contact[]         @relation("ContactReportsTo")
   notes       String?
   outreach    OutreachDraft[]
   createdAt   DateTime          @default(now())
@@ -404,6 +407,9 @@ model JobLead {
   researchSummary String?
   relevanceScore  Int        @default(0)
   isFortune100    Boolean    @default(false)
+  verifiedAt      DateTime?
+  isAlive         Boolean?
+  actualPostedAt  DateTime?
   status          LeadStatus @default(NEW)
   enrichedAt      DateTime?
   capturedAt      DateTime   @default(now())
@@ -414,6 +420,8 @@ model JobLead {
   @@index([normalizedKey])
   @@index([postedAt])
   @@index([status])
+  @@index([isAlive])
+  @@index([actualPostedAt])
 }
 
 model CompanyIntel {
@@ -440,6 +448,29 @@ model OutreachDraft {
   status    OutreachStatus @default(DRAFT)
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
+}
+
+enum OutreachBatchStatus {
+  DRAFT
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+}
+
+model OutreachBatch {
+  id               String              @id @default(cuid())
+  name             String
+  targetContactIds String              // JSON array of contact IDs
+  targetLeadIds    String              // JSON array of lead IDs
+  scheduledFor     DateTime?
+  meetingDate      DateTime?
+  meetingAttendees String?             // JSON array of attendee names/emails
+  notes            String?
+  talkingPoints    String?             // JSON array of talking point strings
+  projectId        String?
+  status           OutreachBatchStatus @default(DRAFT)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
 }
 
 // ─── /business — calendar, showtime, content slots ───────────────────────────

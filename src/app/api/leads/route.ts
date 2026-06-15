@@ -2,6 +2,23 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import type { LeadSource, LeadStatus } from "@prisma/client";
 
+function freshOpenWhere(maxDays: number) {
+  const cutoff = new Date(Date.now() - maxDays * 24 * 60 * 60 * 1000);
+  return {
+    status: { in: ["NEW", "RESEARCHING", "READY_OUTREACH"] as LeadStatus[] },
+    OR: [{ isAlive: null }, { isAlive: true }],
+    AND: [
+      {
+        OR: [
+          { actualPostedAt: { gte: cutoff } },
+          { actualPostedAt: null, postedAt: { gte: cutoff } },
+          { actualPostedAt: null, postedAt: null, capturedAt: { gte: cutoff } },
+        ],
+      },
+    ],
+  };
+}
+
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
   const status = searchParams.get("status") as LeadStatus | null;
@@ -18,21 +35,61 @@ export async function GET(request: NextRequest) {
   const where: Record<string, unknown> = {
     status: { in: ["NEW", "RESEARCHING", "READY_OUTREACH"] },
   };
+
+  if (shortlist) {
+    const shortlistDays = 30;
+    const cutoff = new Date(Date.now() - shortlistDays * 24 * 60 * 60 * 1000);
+    where.OR = [{ isAlive: null }, { isAlive: true }];
+    where.relevanceScore = { gte: Math.max(minRelevance, 40) };
+    where.AND = [
+      {
+        OR: [
+          { actualPostedAt: { gte: cutoff } },
+          { actualPostedAt: null, postedAt: { gte: cutoff } },
+          { actualPostedAt: null, postedAt: null, capturedAt: { gte: cutoff } },
+        ],
+      },
+    ];
+  } else {
+    if (minRelevance > 0) where.relevanceScore = { gte: minRelevance };
+    if (postedWithin > 0) {
+      const days = postedWithin;
+      const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+      where.AND = [
+        ...((where.AND as unknown[]) ?? []),
+        {
+          OR: [
+            { actualPostedAt: { gte: cutoff } },
+            { actualPostedAt: null, postedAt: { gte: cutoff } },
+            { actualPostedAt: null, postedAt: null, capturedAt: { gte: cutoff } },
+          ],
+        },
+      ];
+    } else {
+      const defaultDays = 45;
+      const cutoff = new Date(Date.now() - defaultDays * 24 * 60 * 60 * 1000);
+      where.AND = [
+        ...((where.AND as unknown[]) ?? []),
+        {
+          OR: [
+            { actualPostedAt: { gte: cutoff } },
+            { actualPostedAt: null, postedAt: { gte: cutoff } },
+            { actualPostedAt: null, postedAt: null, capturedAt: { gte: cutoff } },
+          ],
+        },
+      ];
+    }
+  }
+
   if (status) where.status = status;
   if (source) where.source = source;
   if (companyId) where.companyId = companyId;
-  if (minRelevance > 0) where.relevanceScore = { gte: minRelevance };
   if (remoteOnly) where.remote = true;
   if (fortune100) where.isFortune100 = true;
-  if (postedWithin > 0) {
-    const cutoff = new Date(Date.now() - postedWithin * 24 * 60 * 60 * 1000);
-    where.OR = [
-      { postedAt: { gte: cutoff } },
-      { postedAt: null, capturedAt: { gte: cutoff } },
-    ];
-  }
+
   if (q) {
     where.AND = [
+      ...((where.AND as unknown[]) ?? []),
       {
         OR: [
           { title: { contains: q } },
@@ -54,6 +111,7 @@ export async function GET(request: NextRequest) {
   const todayStart = new Date(new Date().setHours(0, 0, 0, 0));
   const limit = shortlist ? 50 : Math.min(parseInt(searchParams.get("limit") ?? "200", 10), 500);
   const offset = parseInt(searchParams.get("offset") ?? "0", 10);
+  const freshWhere = freshOpenWhere(30);
 
   const [leads, settings, totalOpen, newToday, companiesTracked, contactsFound, totalMatching] =
     await Promise.all([
@@ -67,13 +125,19 @@ export async function GET(request: NextRequest) {
             },
           },
         },
-        orderBy: [{ relevanceScore: "desc" }, { postedAt: "desc" }, { capturedAt: "desc" }],
+        orderBy: [{ relevanceScore: "desc" }, { actualPostedAt: "desc" }, { postedAt: "desc" }, { capturedAt: "desc" }],
         take: limit,
         skip: offset,
       }),
       prisma.appSettings.findUnique({ where: { id: "default" } }),
-      prisma.jobLead.count({ where: { status: { in: ["NEW", "RESEARCHING", "READY_OUTREACH"] } } }),
-      prisma.jobLead.count({ where: { status: "NEW", capturedAt: { gte: todayStart } } }),
+      prisma.jobLead.count({ where: freshWhere }),
+      prisma.jobLead.count({
+        where: {
+          ...freshWhere,
+          status: "NEW",
+          capturedAt: { gte: todayStart },
+        },
+      }),
       prisma.company.count(),
       prisma.contact.count(),
       prisma.jobLead.count({ where }),
