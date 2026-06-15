@@ -11,6 +11,10 @@ export { fetchHackerNewsLeads } from "./hackernews";
 export { fetchRemoteOKLeads } from "./remoteok";
 export { fetchGitHubSearchLeads, fetchGitHubOrgLeads } from "./github";
 export { fetchGreenhouseBoard, fetchLeverBoard, fetchATSLeads } from "./ats";
+export { enrichCompany, enrichAllCompanies } from "./enrich";
+export { findContacts, parseJobRequirements } from "./contacts";
+export { researchLead } from "./research";
+export { generateOutreachDraft } from "./outreach";
 
 async function findOrCreateCompany(name: string): Promise<string | null> {
   if (!name?.trim()) return null;
@@ -22,7 +26,7 @@ async function findOrCreateCompany(name: string): Promise<string | null> {
 }
 
 /** Fetch from all sources in parallel; failures are logged, not thrown. */
-export async function fetchAllRawLeads(): Promise<RawLead[]> {
+export async function fetchAllRawLeads(): Promise<{ leads: RawLead[]; errors: string[] }> {
   const companies = await prisma.company.findMany({
     where: {
       OR: [{ githubOrg: { not: null } }, { greenhouseSlug: { not: null } }, { leverSlug: { not: null } }],
@@ -33,30 +37,38 @@ export async function fetchAllRawLeads(): Promise<RawLead[]> {
     .filter((c) => c.githubOrg)
     .map((c) => ({ name: c.name, githubOrg: c.githubOrg! }));
 
-  const results = await Promise.allSettled([
-    fetchHackerNewsLeads(),
-    fetchRemoteOKLeads(),
-    fetchGitHubSearchLeads(),
-    orgs.length ? fetchGitHubOrgLeads(orgs) : Promise.resolve([]),
-    fetchATSLeads(companies),
-  ]);
+  const fetchers: { name: string; fn: () => Promise<RawLead[]> }[] = [
+    { name: "Hacker News", fn: fetchHackerNewsLeads },
+    { name: "RemoteOK", fn: fetchRemoteOKLeads },
+    { name: "GitHub Search", fn: fetchGitHubSearchLeads },
+    ...(orgs.length ? [{ name: "GitHub Orgs", fn: () => fetchGitHubOrgLeads(orgs) }] : []),
+    { name: "ATS Boards", fn: () => fetchATSLeads(companies) },
+  ];
 
   const all: RawLead[] = [];
-  for (const r of results) {
+  const errors: string[] = [];
+
+  const results = await Promise.allSettled(fetchers.map((f) => f.fn()));
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
     if (r.status === "fulfilled") {
       all.push(...r.value);
     } else {
-      console.error("[leads] fetcher error:", r.reason);
+      const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
+      errors.push(`${fetchers[i].name}: ${msg}`);
+      console.error(`[leads] ${fetchers[i].name} error:`, r.reason);
     }
   }
 
   const seen = new Set<string>();
-  return all.filter((lead) => {
+  const leads = all.filter((lead) => {
     const key = lead.url.toLowerCase().trim();
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
+
+  return { leads, errors };
 }
 
 export interface ScanResult {
@@ -65,11 +77,12 @@ export interface ScanResult {
   total: number;
   bySource: Record<string, number>;
   lastScanAt: Date;
+  errors: string[];
 }
 
 /** Pull latest leads from all sources, dedupe by URL, store new ones as NEW. */
 export async function fetchAllLeads(): Promise<ScanResult> {
-  const raw = await fetchAllRawLeads();
+  const { leads: raw, errors } = await fetchAllRawLeads();
   const bySource: Record<string, number> = {};
   let added = 0;
   let skipped = 0;
@@ -119,7 +132,7 @@ export async function fetchAllLeads(): Promise<ScanResult> {
     });
   }
 
-  return { added, skipped, total: raw.length, bySource, lastScanAt };
+  return { added, skipped, total: raw.length, bySource, lastScanAt, errors };
 }
 
 export const SOURCE_LABELS: Record<LeadSource, string> = {

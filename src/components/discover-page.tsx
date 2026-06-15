@@ -36,6 +36,7 @@ interface TrendingEntry {
 }
 
 const QUEUE_DEBOUNCE_MS = 2000;
+const PAGE_SIZE = 20;
 
 const SOURCES: { key: TrendingSource; api: string }[] = [
   { key: "github", api: "GITHUB" },
@@ -66,6 +67,7 @@ export function DiscoverPage() {
   const [hfKind, setHfKind] = useState<"spaces" | "models">("spaces");
   const [externalUrl, setExternalUrl] = useState("");
   const [fetchedAt, setFetchedAt] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const lastQueueAt = useRef(0);
   const router = useRouter();
 
@@ -103,6 +105,7 @@ export function DiscoverPage() {
 
   useEffect(() => {
     setSelected(new Set());
+    setVisibleCount(PAGE_SIZE);
     load(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, period, spoken, language, hfKind]);
@@ -171,6 +174,8 @@ export function DiscoverPage() {
   }
 
   const sourceLabel = SOURCE_LABELS[apiSource as keyof typeof SOURCE_LABELS] ?? source;
+  const visibleEntries = entries.slice(0, visibleCount);
+  const hasMore = visibleCount < entries.length;
 
   return (
     <div className="max-w-5xl mx-auto p-4 lg:p-8">
@@ -305,8 +310,10 @@ export function DiscoverPage() {
       ) : entries.length === 0 ? (
         <p className="text-center text-muted py-12">No results — click Refresh to fetch from {sourceLabel}</p>
       ) : (
-        <div className="space-y-2">
-          {entries.map((entry) => {
+        <>
+          <div className="rounded-xl border border-border bg-card/30 max-h-[min(520px,60vh)] overflow-y-auto">
+            <div className="space-y-2 p-2">
+              {visibleEntries.map((entry) => {
             const unavailable = isUnavailable(entry);
             return (
               <div
@@ -357,8 +364,23 @@ export function DiscoverPage() {
                 </div>
               </div>
             );
-          })}
-        </div>
+              })}
+            </div>
+          </div>
+          <div className="mt-3 flex items-center justify-between text-xs text-muted">
+            <span>
+              Showing {visibleEntries.length} of {entries.length}
+            </span>
+            {hasMore && (
+              <button
+                onClick={() => setVisibleCount((n) => n + PAGE_SIZE)}
+                className="px-4 py-2 rounded-lg border border-border hover:bg-card-hover text-sm text-foreground"
+              >
+                Load more
+              </button>
+            )}
+          </div>
+        </>
       )}
     </div>
   );

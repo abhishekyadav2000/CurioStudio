@@ -21,35 +21,32 @@ export async function GET(request: NextRequest) {
     ];
   }
 
-  const [leads, settings, stats] = await Promise.all([
+  const todayStart = new Date(new Date().setHours(0, 0, 0, 0));
+
+  const [leads, settings, totalOpen, newToday, companiesTracked, contactsFound] = await Promise.all([
     prisma.jobLead.findMany({
       where,
       include: {
         company: {
-          include: { updates: { orderBy: { capturedAt: "desc" }, take: 5 } },
+          include: {
+            intel: { orderBy: { capturedAt: "desc" }, take: 5 },
+            contacts: { take: 5 },
+          },
         },
       },
       orderBy: [{ capturedAt: "desc" }],
     }),
     prisma.appSettings.findUnique({ where: { id: "default" } }),
-    Promise.all([
-      prisma.jobLead.count({ where: { status: "NEW" } }),
-      prisma.jobLead.count({
-        where: {
-          status: "NEW",
-          capturedAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
-        },
-      }),
-      prisma.company.count(),
-    ]),
+    prisma.jobLead.count({ where: { status: { in: ["NEW", "RESEARCHING", "READY_OUTREACH"] } } }),
+    prisma.jobLead.count({ where: { status: "NEW", capturedAt: { gte: todayStart } } }),
+    prisma.company.count(),
+    prisma.contact.count(),
   ]);
-
-  const [totalOpen, newToday, companiesTracked] = stats;
 
   return NextResponse.json({
     leads,
     lastScanAt: settings?.lastLeadsScanAt ?? null,
-    stats: { totalOpen, newToday, companiesTracked },
+    stats: { totalOpen, newToday, companiesTracked, contactsFound },
   });
 }
 

@@ -299,61 +299,122 @@ enum LeadSource {
 
 enum LeadStatus {
   NEW
+  RESEARCHING
+  READY_OUTREACH
   APPLIED
   ARCHIVED
 }
 
-enum CompanyUpdateType {
+enum IntelType {
   JOB_POST
-  PRODUCT_LAUNCH
-  FUNDING
   NEWS
+  PRODUCT
+  FUNDING
+  PERSON_MENTION
+}
+
+enum ContactConfidence {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum OutreachStatus {
+  DRAFT
+  SENT
 }
 
 model Company {
-  id            String          @id @default(cuid())
-  name          String
-  website       String?
-  githubOrg     String?
-  industry      String?
-  notes         String?
-  greenhouseSlug String?
-  leverSlug     String?
-  lastCheckedAt DateTime?
-  jobLeads      JobLead[]
-  updates       CompanyUpdate[]
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
+  id              String          @id @default(cuid())
+  name            String
+  domain          String?
+  website         String?
+  linkedinUrl     String?
+  githubOrg       String?
+  industry        String?
+  employeeCount   Int?
+  description     String?
+  headquarters    String?
+  fundingStage    String?
+  techStack       String?         // JSON array
+  notes           String?
+  greenhouseSlug  String?
+  leverSlug       String?
+  lastCheckedAt   DateTime?
+  lastEnrichedAt  DateTime?
+  jobLeads        JobLead[]
+  contacts        Contact[]
+  intel           CompanyIntel[]
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 
   @@unique([name])
 }
 
-model JobLead {
-  id          String     @id @default(cuid())
-  companyId   String?
-  company     Company?   @relation(fields: [companyId], references: [id], onDelete: SetNull)
-  companyName String?
-  title       String
-  url         String     @unique
-  source      LeadSource
-  location    String?
-  remote      Boolean?
-  postedAt    DateTime?
-  description String?
-  status      LeadStatus @default(NEW)
-  capturedAt  DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+model Contact {
+  id          String            @id @default(cuid())
+  companyId   String
+  company     Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name        String
+  title       String?
+  email       String?
+  phone       String?
+  linkedinUrl String?
+  twitterUrl  String?
+  source      String
+  confidence  ContactConfidence @default(LOW)
+  notes       String?
+  outreach    OutreachDraft[]
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
 }
 
-model CompanyUpdate {
-  id         String            @id @default(cuid())
-  companyId  String
-  company    Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  type       CompanyUpdateType
-  title      String
-  url        String?
-  summary    String?
-  capturedAt DateTime          @default(now())
+model JobLead {
+  id              String     @id @default(cuid())
+  companyId       String?
+  company         Company?   @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  companyName     String?
+  title           String
+  url             String     @unique
+  source          LeadSource
+  location        String?
+  remote          Boolean?
+  salary          String?
+  postedAt        DateTime?
+  description     String?
+  requirements    String?    // JSON array
+  researchSummary String?
+  status          LeadStatus @default(NEW)
+  enrichedAt      DateTime?
+  capturedAt      DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  outreach        OutreachDraft[]
+}
+
+model CompanyIntel {
+  id          String     @id @default(cuid())
+  companyId   String
+  company     Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  type        IntelType
+  title       String
+  url         String?
+  summary     String?
+  publishedAt DateTime?
+  rawData     String?    // JSON
+  capturedAt  DateTime   @default(now())
+}
+
+model OutreachDraft {
+  id        String         @id @default(cuid())
+  jobLeadId String?
+  jobLead   JobLead?       @relation(fields: [jobLeadId], references: [id], onDelete: Cascade)
+  contactId String?
+  contact   Contact?       @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  subject   String
+  body      String
+  status    OutreachStatus @default(DRAFT)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
 }
 
 // ─── /business — calendar, showtime, content slots ───────────────────────────

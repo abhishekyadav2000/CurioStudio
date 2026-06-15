@@ -4,7 +4,7 @@ import { prisma } from "@/lib/db";
 export async function GET() {
   const companies = await prisma.company.findMany({
     include: {
-      _count: { select: { jobLeads: true, updates: true } },
+      _count: { select: { jobLeads: true, intel: true, contacts: true } },
       jobLeads: {
         where: { status: "NEW" },
         select: { id: true },

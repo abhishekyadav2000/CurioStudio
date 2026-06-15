@@ -6,19 +6,23 @@ import {
   Radar,
   Building2,
   ExternalLink,
-  ChevronDown,
-  ChevronUp,
-  Plus,
-  Trash2,
   RefreshCw,
   Briefcase,
+  Users,
+  Mail,
+  Copy,
+  Check,
+  Sparkles,
+  X,
+  ChevronRight,
 } from "lucide-react";
 import { Breadcrumbs, PageHeader } from "@/components/page-header";
 
-type LeadStatus = "NEW" | "APPLIED" | "ARCHIVED";
+type LeadStatus = "NEW" | "RESEARCHING" | "READY_OUTREACH" | "APPLIED" | "ARCHIVED";
 type LeadSource = "HN" | "REMOTEOK" | "GREENHOUSE" | "GITHUB" | "MANUAL";
+type Tab = "openings" | "companies" | "contacts" | "outreach";
 
-interface CompanyUpdate {
+interface CompanyIntel {
   id: string;
   type: string;
   title: string;
@@ -27,17 +31,35 @@ interface CompanyUpdate {
   capturedAt: string;
 }
 
+interface Contact {
+  id: string;
+  name: string;
+  title?: string | null;
+  email?: string | null;
+  linkedinUrl?: string | null;
+  source: string;
+  confidence: "HIGH" | "MEDIUM" | "LOW";
+  company?: { id: string; name: string };
+}
+
 interface Company {
   id: string;
   name: string;
   website?: string | null;
+  domain?: string | null;
   githubOrg?: string | null;
   industry?: string | null;
+  description?: string | null;
+  techStack?: string | null;
+  headquarters?: string | null;
+  lastEnrichedAt?: string | null;
   greenhouseSlug?: string | null;
   leverSlug?: string | null;
-  _count?: { jobLeads: number; updates: number };
+  _count?: { jobLeads: number; contacts: number; intel: number };
   newLeadCount?: number;
-  updates?: CompanyUpdate[];
+  intel?: CompanyIntel[];
+  contacts?: Contact[];
+  jobLeads?: JobLead[];
 }
 
 interface JobLead {
@@ -50,9 +72,20 @@ interface JobLead {
   remote?: boolean | null;
   postedAt?: string | null;
   description?: string | null;
+  researchSummary?: string | null;
   status: LeadStatus;
   capturedAt: string;
   company?: Company | null;
+}
+
+interface OutreachDraft {
+  id: string;
+  subject: string;
+  body: string;
+  status: "DRAFT" | "SENT";
+  createdAt: string;
+  jobLead?: { id: string; title: string; companyName?: string | null } | null;
+  contact?: { id: string; name: string; title?: string | null } | null;
 }
 
 const SOURCE_LABELS: Record<LeadSource, string> = {
@@ -63,8 +96,18 @@ const SOURCE_LABELS: Record<LeadSource, string> = {
   MANUAL: "Manual",
 };
 
+const STATUS_LABELS: Record<LeadStatus, string> = {
+  NEW: "New",
+  RESEARCHING: "Researching",
+  READY_OUTREACH: "Ready",
+  APPLIED: "Applied",
+  ARCHIVED: "Archived",
+};
+
 const STATUS_COLORS: Record<LeadStatus, string> = {
   NEW: "text-accent border-accent/30 bg-accent/10",
+  RESEARCHING: "text-amber-400 border-amber-400/30 bg-amber-400/10",
+  READY_OUTREACH: "text-emerald-400 border-emerald-400/30 bg-emerald-400/10",
   APPLIED: "text-info border-info/30 bg-info/10",
   ARCHIVED: "text-muted border-border bg-card",
 };
@@ -84,62 +127,84 @@ function formatRelative(iso?: string | null) {
   return d.toLocaleString();
 }
 
+function parseTechStack(raw?: string | null): string[] {
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw) as string[];
+  } catch {
+    return [];
+  }
+}
+
 export function LeadsPageClient() {
+  const [tab, setTab] = useState<Tab>("openings");
   const [leads, setLeads] = useState<JobLead[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
-  const [stats, setStats] = useState({ totalOpen: 0, newToday: 0, companiesTracked: 0 });
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [drafts, setDrafts] = useState<OutreachDraft[]>([]);
+  const [stats, setStats] = useState({ totalOpen: 0, newToday: 0, companiesTracked: 0, contactsFound: 0 });
   const [lastScanAt, setLastScanAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<LeadStatus | "ALL">("NEW");
-  const [sourceFilter, setSourceFilter] = useState<LeadSource | "ALL">("ALL");
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [showAddLead, setShowAddLead] = useState(false);
-  const [showAddCompany, setShowAddCompany] = useState(false);
+  const [enriching, setEnriching] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [scanMessage, setScanMessage] = useState<string | null>(null);
+  const [selectedLead, setSelectedLead] = useState<JobLead | null>(null);
+  const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
+  const [researching, setResearching] = useState(false);
+  const [generatingOutreach, setGeneratingOutreach] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [contactCompanyFilter, setContactCompanyFilter] = useState<string>("ALL");
 
-  const [manualLead, setManualLead] = useState({
-    title: "",
-    url: "",
-    companyName: "",
-    location: "",
-    description: "",
-  });
-  const [newCompany, setNewCompany] = useState({
-    name: "",
-    website: "",
-    githubOrg: "",
-    greenhouseSlug: "",
-    leverSlug: "",
-  });
-
-  const load = useCallback(async (filters?: { status?: string; source?: string }) => {
-    const params = new URLSearchParams();
-    if (filters?.status && filters.status !== "ALL") params.set("status", filters.status);
-    if (filters?.source && filters.source !== "ALL") params.set("source", filters.source);
-
-    const [leadsRes, companiesRes] = await Promise.all([
-      fetch(`/api/leads?${params}`).then((r) => r.json()),
+  const load = useCallback(async () => {
+    setLoading(true);
+    const [leadsRes, companiesRes, contactsRes, outreachRes] = await Promise.all([
+      fetch("/api/leads").then((r) => r.json()),
       fetch("/api/leads/companies").then((r) => r.json()),
+      fetch("/api/leads/contacts").then((r) => r.json()),
+      fetch("/api/leads/outreach").then((r) => r.json()),
     ]);
 
     setLeads(leadsRes.leads ?? []);
-    setStats(leadsRes.stats ?? { totalOpen: 0, newToday: 0, companiesTracked: 0 });
+    setStats(leadsRes.stats ?? { totalOpen: 0, newToday: 0, companiesTracked: 0, contactsFound: 0 });
     setLastScanAt(leadsRes.lastScanAt ?? null);
     setCompanies(companiesRes.companies ?? []);
+    setContacts(contactsRes.contacts ?? []);
+    setDrafts(outreachRes.drafts ?? []);
     setLoading(false);
   }, []);
 
   useEffect(() => {
-    load({ status: statusFilter, source: sourceFilter });
-  }, [statusFilter, sourceFilter, load]);
+    load();
+  }, [load]);
 
   async function runScan() {
     setScanning(true);
+    setScanError(null);
+    setScanMessage(null);
     try {
-      await fetch("/api/leads/scan", { method: "POST" });
-      await load({ status: statusFilter, source: sourceFilter });
+      const res = await fetch("/api/leads/scan", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Scan failed");
+      const parts = [`Added ${data.added} leads`, `${data.total} fetched`];
+      if (data.errors?.length) parts.push(`${data.errors.length} source warning(s)`);
+      setScanMessage(parts.join(" · "));
+      if (data.errors?.length) setScanError(data.errors.join("; "));
+      await load();
+    } catch (err) {
+      setScanError(err instanceof Error ? err.message : "Scan failed");
     } finally {
       setScanning(false);
+    }
+  }
+
+  async function runEnrichAll() {
+    setEnriching(true);
+    try {
+      await fetch("/api/leads/enrich-all", { method: "POST" });
+      await load();
+    } finally {
+      setEnriching(false);
     }
   }
 
@@ -150,49 +215,97 @@ export function LeadsPageClient() {
       body: JSON.stringify({ status }),
     });
     setLeads((prev) => prev.map((l) => (l.id === id ? { ...l, status } : l)));
+    if (selectedLead?.id === id) setSelectedLead((l) => (l ? { ...l, status } : l));
   }
 
-  async function deleteLead(id: string) {
-    await fetch(`/api/leads/${id}`, { method: "DELETE" });
-    setLeads((prev) => prev.filter((l) => l.id !== id));
-  }
-
-  async function addManualLead(e: React.FormEvent) {
-    e.preventDefault();
-    const res = await fetch("/api/leads", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...manualLead, source: "MANUAL" }),
-    });
-    if (res.ok) {
-      setManualLead({ title: "", url: "", companyName: "", location: "", description: "" });
-      setShowAddLead(false);
-      load({ status: statusFilter, source: sourceFilter });
+  async function researchLead(lead: JobLead) {
+    setResearching(true);
+    try {
+      const res = await fetch(`/api/leads/${lead.id}/research`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Research failed");
+      await load();
+      if (data.result?.summary) {
+        setSelectedLead((prev) =>
+          prev?.id === lead.id
+            ? { ...prev, researchSummary: data.result.summary, status: "READY_OUTREACH" }
+            : prev
+        );
+      }
+    } finally {
+      setResearching(false);
     }
   }
 
-  async function addCompany(e: React.FormEvent) {
-    e.preventDefault();
-    const res = await fetch("/api/leads/companies", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(newCompany),
-    });
-    if (res.ok) {
-      setNewCompany({ name: "", website: "", githubOrg: "", greenhouseSlug: "", leverSlug: "" });
-      setShowAddCompany(false);
-      load({ status: statusFilter, source: sourceFilter });
+  async function generateOutreach(leadId: string) {
+    setGeneratingOutreach(true);
+    try {
+      const res = await fetch("/api/leads/outreach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobLeadId: leadId }),
+      });
+      if (res.ok) {
+        setTab("outreach");
+        await load();
+      }
+    } finally {
+      setGeneratingOutreach(false);
     }
   }
 
-  const filteredLeads = leads;
+  async function enrichCompany(id: string) {
+    const res = await fetch(`/api/leads/companies/${id}`, { method: "POST" });
+    if (res.ok) {
+      const data = await res.json();
+      setSelectedCompany(data.company ?? null);
+      await load();
+    }
+  }
+
+  async function openCompanyProfile(id: string) {
+    const res = await fetch(`/api/leads/companies/${id}`);
+    const data = await res.json();
+    if (data.company) {
+      setSelectedCompany(data.company);
+      setTab("companies");
+    }
+  }
+
+  async function markDraftSent(id: string) {
+    await fetch("/api/leads/outreach", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, status: "SENT" }),
+    });
+    setDrafts((prev) => prev.map((d) => (d.id === id ? { ...d, status: "SENT" } : d)));
+  }
+
+  function copyDraft(draft: OutreachDraft) {
+    const text = `Subject: ${draft.subject}\n\n${draft.body}`;
+    navigator.clipboard.writeText(text);
+    setCopiedId(draft.id);
+    setTimeout(() => setCopiedId(null), 2000);
+  }
+
+  const filteredContacts =
+    contactCompanyFilter === "ALL"
+      ? contacts
+      : contacts.filter((c) => c.company?.id === contactCompanyFilter);
+
+  const tabs: { key: Tab; label: string; icon: typeof Radar }[] = [
+    { key: "openings", label: "Openings", icon: Briefcase },
+    { key: "companies", label: "Companies", icon: Building2 },
+    { key: "contacts", label: "Contacts", icon: Users },
+    { key: "outreach", label: "Outreach", icon: Mail },
+  ];
 
   return (
     <div className="max-w-6xl mx-auto p-4 lg:p-8">
       <Breadcrumbs items={[{ label: "Dashboard", href: "/" }, { label: "Insider Tracker" }]} />
       <PageHeader
         title="Insider Tracker"
-        description="Auto-capture job openings, companies, and hiring signals — no manual hunting"
+        description="Lead intelligence — scan openings, enrich companies, research roles, draft outreach"
         actions={
           <>
             <button
@@ -200,31 +313,35 @@ export function LeadsPageClient() {
               disabled={scanning}
               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-dim disabled:opacity-60"
             >
-              {scanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-              Scan now
+              {scanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Radar className="w-4 h-4" />}
+              Scan for openings
             </button>
             <button
-              onClick={() => setShowAddLead(!showAddLead)}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm hover:bg-card-hover"
+              onClick={runEnrichAll}
+              disabled={enriching}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm hover:bg-card-hover disabled:opacity-60"
             >
-              <Plus className="w-4 h-4" />
-              Add lead
+              {enriching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+              Enrich all
             </button>
           </>
         }
       />
 
-      <p className="text-xs text-muted mb-4">
-        Last scan: {formatRelative(lastScanAt)}
-        <span className="mx-2">·</span>
-        Tip: run Scan daily to catch new postings — cron automation coming soon
-      </p>
+      <p className="text-xs text-muted mb-2">Last scan: {formatRelative(lastScanAt)}</p>
+      {scanMessage && <p className="text-xs text-emerald-400 mb-2">{scanMessage}</p>}
+      {scanError && (
+        <p className="text-xs text-amber-400 mb-2 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20">
+          {scanError}
+        </p>
+      )}
 
-      <div className="grid grid-cols-3 gap-3 mb-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
         {[
-          { label: "New today", value: stats.newToday, accent: true },
-          { label: "Total open", value: stats.totalOpen },
           { label: "Companies tracked", value: stats.companiesTracked },
+          { label: "Open roles", value: stats.totalOpen, accent: true },
+          { label: "New today", value: stats.newToday, accent: stats.newToday > 0 },
+          { label: "Contacts found", value: stats.contactsFound },
         ].map((s) => (
           <div key={s.label} className="p-3 rounded-xl bg-card border border-border">
             <p className="text-[10px] text-muted uppercase tracking-wide">{s.label}</p>
@@ -233,275 +350,402 @@ export function LeadsPageClient() {
         ))}
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-wrap gap-2 mb-4">
-        {(["ALL", "NEW", "APPLIED", "ARCHIVED"] as const).map((s) => (
+      <div className="flex flex-wrap gap-2 mb-6 border-b border-border pb-3">
+        {tabs.map(({ key, label, icon: Icon }) => (
           <button
-            key={s}
-            onClick={() => setStatusFilter(s)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium ${
-              statusFilter === s ? "bg-accent/10 text-accent border border-accent/30" : "border border-border hover:bg-card-hover"
+            key={key}
+            onClick={() => setTab(key)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              tab === key ? "bg-accent/10 text-accent border border-accent/30" : "text-muted hover:bg-card-hover"
             }`}
           >
-            {s === "ALL" ? "All statuses" : s.charAt(0) + s.slice(1).toLowerCase()}
-          </button>
-        ))}
-        <span className="w-px bg-border mx-1" />
-        {(["ALL", "HN", "REMOTEOK", "GITHUB", "GREENHOUSE", "MANUAL"] as const).map((s) => (
-          <button
-            key={s}
-            onClick={() => setSourceFilter(s)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium ${
-              sourceFilter === s ? "bg-accent/10 text-accent border border-accent/30" : "border border-border hover:bg-card-hover"
-            }`}
-          >
-            {s === "ALL" ? "All sources" : SOURCE_LABELS[s as LeadSource]}
+            <Icon className="w-4 h-4" />
+            {label}
           </button>
         ))}
       </div>
 
-      {/* Manual add lead form */}
-      {showAddLead && (
-        <form onSubmit={addManualLead} className="mb-6 p-4 rounded-xl bg-card border border-border space-y-3">
-          <h3 className="font-semibold text-sm flex items-center gap-2">
-            <Briefcase className="w-4 h-4 text-accent" /> Add manual lead
-          </h3>
-          <div className="grid sm:grid-cols-2 gap-3">
-            <input
-              required
-              placeholder="Job title"
-              value={manualLead.title}
-              onChange={(e) => setManualLead({ ...manualLead, title: e.target.value })}
-              className="bg-background border border-border rounded-lg px-3 py-2 text-sm"
-            />
-            <input
-              required
-              placeholder="URL"
-              type="url"
-              value={manualLead.url}
-              onChange={(e) => setManualLead({ ...manualLead, url: e.target.value })}
-              className="bg-background border border-border rounded-lg px-3 py-2 text-sm"
-            />
-            <input
-              placeholder="Company name"
-              value={manualLead.companyName}
-              onChange={(e) => setManualLead({ ...manualLead, companyName: e.target.value })}
-              className="bg-background border border-border rounded-lg px-3 py-2 text-sm"
-            />
-            <input
-              placeholder="Location"
-              value={manualLead.location}
-              onChange={(e) => setManualLead({ ...manualLead, location: e.target.value })}
-              className="bg-background border border-border rounded-lg px-3 py-2 text-sm"
-            />
-          </div>
-          <textarea
-            placeholder="Description (optional)"
-            value={manualLead.description}
-            onChange={(e) => setManualLead({ ...manualLead, description: e.target.value })}
-            className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm min-h-[80px]"
-          />
-          <button type="submit" className="px-4 py-2 rounded-lg bg-accent text-white text-sm">
-            Save lead
-          </button>
-        </form>
-      )}
-
-      <div className="grid lg:grid-cols-3 gap-6">
-        {/* Lead list */}
-        <div className="lg:col-span-2 space-y-3">
-          <h3 className="font-semibold text-sm flex items-center gap-2">
-            <Radar className="w-4 h-4 text-accent" />
-            Job leads ({filteredLeads.length})
-          </h3>
-
-          {loading ? (
-            <Loader2 className="w-8 h-8 animate-spin text-accent mx-auto" />
-          ) : filteredLeads.length === 0 ? (
-            <div className="p-8 rounded-xl border border-dashed border-border text-center text-sm text-muted">
-              <Radar className="w-8 h-8 mx-auto mb-2 opacity-40" />
-              No leads yet — click <strong className="text-accent">Scan now</strong> to pull from HN, RemoteOK, GitHub &amp; ATS boards
-            </div>
-          ) : (
-            filteredLeads.map((lead) => (
-              <div key={lead.id} className="rounded-xl bg-card border border-border overflow-hidden">
-                <div
-                  className="p-4 cursor-pointer hover:bg-card-hover transition-colors"
-                  onClick={() => setExpandedId(expandedId === lead.id ? null : lead.id)}
-                >
-                  <div className="flex items-start justify-between gap-3">
+      {loading ? (
+        <div className="flex justify-center py-16">
+          <Loader2 className="w-8 h-8 animate-spin text-accent" />
+        </div>
+      ) : (
+        <>
+          {tab === "openings" && (
+            <div className="space-y-2">
+              {leads.length === 0 ? (
+                <div className="p-10 rounded-xl border border-dashed border-border text-center">
+                  <Radar className="w-10 h-10 mx-auto mb-3 text-muted opacity-50" />
+                  <p className="text-sm text-muted mb-3">No openings yet. Run a scan to pull from RemoteOK, Hacker News, GitHub, and ATS boards.</p>
+                  <button onClick={runScan} disabled={scanning} className="px-4 py-2 rounded-lg bg-accent text-white text-sm">
+                    Scan for openings
+                  </button>
+                </div>
+              ) : (
+                leads.map((lead) => (
+                  <button
+                    key={lead.id}
+                    onClick={() => setSelectedLead(lead)}
+                    className="w-full text-left p-4 rounded-xl bg-card border border-border hover:border-accent/30 transition-colors flex items-center gap-4"
+                  >
+                    <div className="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center shrink-0">
+                      <Briefcase className="w-5 h-5 text-accent" />
+                    </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-medium text-sm">{lead.title}</span>
                         {lead.remote && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/10 text-accent">Remote</span>
                         )}
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded border ${STATUS_COLORS[lead.status]}`}>
+                          {STATUS_LABELS[lead.status]}
+                        </span>
                       </div>
-                      <div className="flex items-center gap-2 mt-1 text-xs text-muted flex-wrap">
-                        {lead.companyName && (
-                          <span className="flex items-center gap-1">
-                            <Building2 className="w-3 h-3" />
-                            {lead.companyName}
-                          </span>
-                        )}
-                        {lead.location && <span>· {lead.location}</span>}
-                        <span>· {SOURCE_LABELS[lead.source]}</span>
-                        <span>· Posted {formatDate(lead.postedAt)}</span>
-                      </div>
+                      <p className="text-xs text-muted mt-1">
+                        {lead.companyName ?? "Unknown company"} · {SOURCE_LABELS[lead.source]} · {formatDate(lead.postedAt ?? lead.capturedAt)}
+                      </p>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
-                      <select
-                        value={lead.status}
-                        onChange={(e) => updateStatus(lead.id, e.target.value as LeadStatus)}
-                        className={`text-xs px-2 py-1 rounded-lg border ${STATUS_COLORS[lead.status]}`}
+                    <ChevronRight className="w-4 h-4 text-muted shrink-0" />
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+
+          {tab === "companies" && (
+            <div className="grid md:grid-cols-2 gap-3">
+              {companies.length === 0 ? (
+                <p className="text-sm text-muted col-span-2 p-8 text-center border border-dashed border-border rounded-xl">
+                  Companies appear automatically when you scan job openings.
+                </p>
+              ) : (
+                companies.map((co) => (
+                  <button
+                    key={co.id}
+                    onClick={() => openCompanyProfile(co.id)}
+                    className="p-4 rounded-xl bg-card border border-border hover:border-accent/30 text-left transition-colors"
+                  >
+                    <p className="font-semibold text-sm">{co.name}</p>
+                    <p className="text-xs text-muted mt-1">
+                      {co._count?.jobLeads ?? 0} roles · {co._count?.contacts ?? 0} contacts · enriched {formatRelative(co.lastEnrichedAt)}
+                    </p>
+                    {co.description && <p className="text-xs text-muted mt-2 line-clamp-2">{co.description}</p>}
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+
+          {tab === "contacts" && (
+            <div>
+              <div className="mb-4">
+                <select
+                  value={contactCompanyFilter}
+                  onChange={(e) => setContactCompanyFilter(e.target.value)}
+                  className="bg-card border border-border rounded-lg px-3 py-2 text-sm"
+                >
+                  <option value="ALL">All companies</option>
+                  {companies.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {filteredContacts.length === 0 ? (
+                <p className="text-sm text-muted p-8 text-center border border-dashed border-border rounded-xl">
+                  No contacts yet. Enrich companies to discover emails and team members.
+                </p>
+              ) : (
+                <div className="rounded-xl border border-border overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-card border-b border-border">
+                      <tr className="text-left text-xs text-muted">
+                        <th className="p-3 font-medium">Name</th>
+                        <th className="p-3 font-medium">Title</th>
+                        <th className="p-3 font-medium">Company</th>
+                        <th className="p-3 font-medium">Contact</th>
+                        <th className="p-3 font-medium">Confidence</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredContacts.map((c) => (
+                        <tr key={c.id} className="border-b border-border/50 hover:bg-card/50">
+                          <td className="p-3 font-medium">{c.name}</td>
+                          <td className="p-3 text-muted">{c.title ?? "—"}</td>
+                          <td className="p-3 text-muted">{c.company?.name ?? "—"}</td>
+                          <td className="p-3">
+                            {c.email ? (
+                              <a href={`mailto:${c.email}`} className="text-accent hover:underline text-xs">
+                                {c.email}
+                              </a>
+                            ) : c.linkedinUrl ? (
+                              <a href={c.linkedinUrl} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline text-xs">
+                                LinkedIn
+                              </a>
+                            ) : (
+                              <span className="text-muted text-xs">—</span>
+                            )}
+                          </td>
+                          <td className="p-3">
+                            <span
+                              className={`text-[10px] px-1.5 py-0.5 rounded ${
+                                c.confidence === "HIGH"
+                                  ? "bg-emerald-500/10 text-emerald-400"
+                                  : c.confidence === "MEDIUM"
+                                    ? "bg-amber-500/10 text-amber-400"
+                                    : "bg-muted/10 text-muted"
+                              }`}
+                            >
+                              {c.confidence}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {tab === "outreach" && (
+            <div className="space-y-3">
+              {drafts.length === 0 ? (
+                <p className="text-sm text-muted p-8 text-center border border-dashed border-border rounded-xl">
+                  No outreach drafts yet. Open a lead and click &quot;Generate outreach email&quot;.
+                </p>
+              ) : (
+                drafts.map((draft) => (
+                  <div key={draft.id} className="p-4 rounded-xl bg-card border border-border">
+                    <div className="flex items-start justify-between gap-3 mb-3">
+                      <div>
+                        <p className="font-medium text-sm">{draft.subject}</p>
+                        <p className="text-xs text-muted mt-0.5">
+                          {draft.jobLead?.title ?? "General"} · {draft.jobLead?.companyName ?? ""} · {formatRelative(draft.createdAt)}
+                        </p>
+                      </div>
+                      <span
+                        className={`text-[10px] px-2 py-0.5 rounded border ${
+                          draft.status === "SENT" ? "text-emerald-400 border-emerald-400/30" : "text-muted border-border"
+                        }`}
                       >
-                        <option value="NEW">New</option>
-                        <option value="APPLIED">Applied</option>
-                        <option value="ARCHIVED">Archived</option>
-                      </select>
-                      <a
-                        href={lead.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="p-1.5 rounded-lg hover:bg-card-hover text-muted hover:text-accent"
-                        title="Open link"
-                      >
-                        <ExternalLink className="w-4 h-4" />
-                      </a>
+                        {draft.status}
+                      </span>
+                    </div>
+                    <pre className="text-xs text-muted whitespace-pre-wrap font-sans mb-3 max-h-40 overflow-y-auto">{draft.body}</pre>
+                    <div className="flex gap-2">
                       <button
-                        onClick={() => deleteLead(lead.id)}
-                        className="p-1.5 rounded-lg hover:bg-danger/10 text-muted hover:text-danger"
-                        title="Delete"
+                        onClick={() => copyDraft(draft)}
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-border text-xs hover:bg-card-hover"
                       >
-                        <Trash2 className="w-4 h-4" />
+                        {copiedId === draft.id ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        Copy
                       </button>
-                      {expandedId === lead.id ? (
-                        <ChevronUp className="w-4 h-4 text-muted" />
-                      ) : (
-                        <ChevronDown className="w-4 h-4 text-muted" />
+                      {draft.status === "DRAFT" && (
+                        <button
+                          onClick={() => markDraftSent(draft.id)}
+                          className="px-3 py-1.5 rounded-lg bg-accent/10 text-accent text-xs hover:bg-accent/20"
+                        >
+                          Mark sent
+                        </button>
                       )}
                     </div>
                   </div>
-                </div>
-
-                {expandedId === lead.id && (
-                  <div className="px-4 pb-4 border-t border-border pt-3 space-y-3">
-                    {lead.description && (
-                      <div>
-                        <p className="text-[10px] text-muted uppercase mb-1">Description</p>
-                        <p className="text-xs text-foreground/80 whitespace-pre-wrap line-clamp-6">{lead.description}</p>
-                      </div>
-                    )}
-                    {lead.company?.updates && lead.company.updates.length > 0 && (
-                      <div>
-                        <p className="text-[10px] text-muted uppercase mb-2">Company intel</p>
-                        <div className="space-y-2">
-                          {lead.company.updates.map((u) => (
-                            <div key={u.id} className="text-xs p-2 rounded-lg bg-background border border-border">
-                              <span className="text-accent font-medium">{u.type.replace("_", " ")}</span>
-                              {" — "}
-                              {u.url ? (
-                                <a href={u.url} target="_blank" rel="noopener noreferrer" className="hover:text-accent">
-                                  {u.title}
-                                </a>
-                              ) : (
-                                u.title
-                              )}
-                              {u.summary && <p className="text-muted mt-1">{u.summary}</p>}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    <p className="text-[10px] text-muted">Captured {formatDate(lead.capturedAt)}</p>
-                  </div>
-                )}
-              </div>
-            ))
+                ))
+              )}
+            </div>
           )}
-        </div>
+        </>
+      )}
 
-        {/* Company watchlist */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-sm flex items-center gap-2">
-              <Building2 className="w-4 h-4 text-accent" />
-              Company watchlist
-            </h3>
+      {selectedLead && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setSelectedLead(null)} />
+          <div className="relative w-full max-w-lg bg-background border-l border-border h-full overflow-y-auto p-6 shadow-xl">
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h2 className="text-lg font-bold">{selectedLead.title}</h2>
+                <p className="text-sm text-muted">{selectedLead.companyName ?? "Unknown company"}</p>
+              </div>
+              <button onClick={() => setSelectedLead(null)} className="p-2 rounded-lg hover:bg-card-hover">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex flex-wrap gap-2 mb-4">
+              <select
+                value={selectedLead.status}
+                onChange={(e) => updateStatus(selectedLead.id, e.target.value as LeadStatus)}
+                className={`text-xs px-2 py-1 rounded-lg border ${STATUS_COLORS[selectedLead.status]}`}
+              >
+                {Object.entries(STATUS_LABELS).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+              <a
+                href={selectedLead.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1 px-3 py-1 rounded-lg border border-border text-xs hover:bg-card-hover"
+              >
+                <ExternalLink className="w-3 h-3" /> View posting
+              </a>
+            </div>
+
+            {selectedLead.description && (
+              <div className="mb-4">
+                <p className="text-[10px] text-muted uppercase mb-1">Description</p>
+                <p className="text-xs whitespace-pre-wrap text-foreground/80 max-h-48 overflow-y-auto">{selectedLead.description}</p>
+              </div>
+            )}
+
+            {selectedLead.researchSummary ? (
+              <div className="mb-4 p-3 rounded-lg bg-accent/5 border border-accent/20">
+                <p className="text-[10px] text-accent uppercase mb-1 font-semibold">What they want</p>
+                <p className="text-xs whitespace-pre-wrap">{selectedLead.researchSummary}</p>
+              </div>
+            ) : (
+              <button
+                onClick={() => researchLead(selectedLead)}
+                disabled={researching}
+                className="w-full mb-4 flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-accent/40 text-accent text-sm hover:bg-accent/10 disabled:opacity-60"
+              >
+                {researching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                Research lead
+              </button>
+            )}
+
+            {selectedLead.company?.intel && selectedLead.company.intel.length > 0 && (
+              <div className="mb-4">
+                <p className="text-[10px] text-muted uppercase mb-2">Company intel</p>
+                <div className="space-y-2">
+                  {selectedLead.company.intel.map((i) => (
+                    <div key={i.id} className="text-xs p-2 rounded-lg bg-card border border-border">
+                      <span className="text-accent font-medium">{i.type.replace("_", " ")}</span> — {i.title}
+                      {i.summary && <p className="text-muted mt-1">{i.summary}</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {selectedLead.company?.contacts && selectedLead.company.contacts.length > 0 && (
+              <div className="mb-4">
+                <p className="text-[10px] text-muted uppercase mb-2">Contacts at company</p>
+                {selectedLead.company.contacts.map((c) => (
+                  <div key={c.id} className="text-xs py-1.5 border-b border-border/50">
+                    <span className="font-medium">{c.name}</span>
+                    {c.title && <span className="text-muted"> · {c.title}</span>}
+                    {c.email && (
+                      <a href={`mailto:${c.email}`} className="block text-accent hover:underline">
+                        {c.email}
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
             <button
-              onClick={() => setShowAddCompany(!showAddCompany)}
-              className="p-1.5 rounded-lg hover:bg-card-hover text-muted hover:text-accent"
-              title="Add company"
+              onClick={() => generateOutreach(selectedLead.id)}
+              disabled={generatingOutreach}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-dim disabled:opacity-60"
             >
-              <Plus className="w-4 h-4" />
+              {generatingOutreach ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+              Generate outreach email
             </button>
           </div>
-
-          {showAddCompany && (
-            <form onSubmit={addCompany} className="p-3 rounded-xl bg-card border border-border space-y-2">
-              <input
-                required
-                placeholder="Company name"
-                value={newCompany.name}
-                onChange={(e) => setNewCompany({ ...newCompany, name: e.target.value })}
-                className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm"
-              />
-              <input
-                placeholder="Website"
-                value={newCompany.website}
-                onChange={(e) => setNewCompany({ ...newCompany, website: e.target.value })}
-                className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm"
-              />
-              <input
-                placeholder="GitHub org"
-                value={newCompany.githubOrg}
-                onChange={(e) => setNewCompany({ ...newCompany, githubOrg: e.target.value })}
-                className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm"
-              />
-              <input
-                placeholder="Greenhouse slug"
-                value={newCompany.greenhouseSlug}
-                onChange={(e) => setNewCompany({ ...newCompany, greenhouseSlug: e.target.value })}
-                className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm"
-              />
-              <input
-                placeholder="Lever slug"
-                value={newCompany.leverSlug}
-                onChange={(e) => setNewCompany({ ...newCompany, leverSlug: e.target.value })}
-                className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm"
-              />
-              <button type="submit" className="w-full px-3 py-2 rounded-lg bg-accent text-white text-sm">
-                Add to watchlist
-              </button>
-            </form>
-          )}
-
-          {companies.length === 0 ? (
-            <p className="text-xs text-muted p-4 rounded-xl border border-dashed border-border">
-              Add companies to monitor their GitHub orgs and ATS job boards
-            </p>
-          ) : (
-            companies.map((co) => (
-              <div key={co.id} className="p-3 rounded-xl bg-card border border-border">
-                <p className="font-medium text-sm">{co.name}</p>
-                <div className="text-[10px] text-muted mt-1 space-y-0.5">
-                  {co.githubOrg && <p>GitHub: {co.githubOrg}</p>}
-                  {co.greenhouseSlug && <p>Greenhouse: {co.greenhouseSlug}</p>}
-                  {co.leverSlug && <p>Lever: {co.leverSlug}</p>}
-                  {co.website && (
-                    <a href={co.website} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
-                      {co.website.replace(/^https?:\/\//, "")}
-                    </a>
-                  )}
-                </div>
-                <p className="text-[10px] text-muted mt-2">
-                  {co._count?.jobLeads ?? 0} leads · {co.newLeadCount ?? 0} new
-                </p>
-              </div>
-            ))
-          )}
         </div>
-      </div>
+      )}
+
+      {selectedCompany && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setSelectedCompany(null)} />
+          <div className="relative w-full max-w-lg bg-background border-l border-border h-full overflow-y-auto p-6 shadow-xl">
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h2 className="text-lg font-bold">{selectedCompany.name}</h2>
+                {selectedCompany.website && (
+                  <a href={selectedCompany.website} target="_blank" rel="noopener noreferrer" className="text-xs text-accent hover:underline">
+                    {selectedCompany.website.replace(/^https?:\/\//, "")}
+                  </a>
+                )}
+              </div>
+              <button onClick={() => setSelectedCompany(null)} className="p-2 rounded-lg hover:bg-card-hover">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {selectedCompany.description && (
+              <p className="text-sm text-muted mb-4">{selectedCompany.description}</p>
+            )}
+
+            {parseTechStack(selectedCompany.techStack).length > 0 && (
+              <div className="mb-4 flex flex-wrap gap-1">
+                {parseTechStack(selectedCompany.techStack).map((t) => (
+                  <span key={t} className="text-[10px] px-2 py-0.5 rounded bg-card border border-border">
+                    {t}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            <button
+              onClick={() => enrichCompany(selectedCompany.id)}
+              className="w-full mb-4 flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-accent/40 text-accent text-sm hover:bg-accent/10"
+            >
+              <RefreshCw className="w-4 h-4" /> Enrich now
+            </button>
+
+            {selectedCompany.intel && selectedCompany.intel.length > 0 && (
+              <div className="mb-4">
+                <p className="text-[10px] text-muted uppercase mb-2">Intel timeline</p>
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {selectedCompany.intel.map((i) => (
+                    <div key={i.id} className="text-xs p-2 rounded-lg bg-card border border-border">
+                      <span className="text-accent">{i.type}</span> — {i.title}
+                      <p className="text-[10px] text-muted mt-0.5">{formatDate(i.capturedAt)}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {selectedCompany.jobLeads && selectedCompany.jobLeads.length > 0 && (
+              <div className="mb-4">
+                <p className="text-[10px] text-muted uppercase mb-2">Open roles ({selectedCompany.jobLeads.length})</p>
+                {selectedCompany.jobLeads.map((j) => (
+                  <button
+                    key={j.id}
+                    onClick={() => {
+                      setSelectedCompany(null);
+                      setSelectedLead(j);
+                      setTab("openings");
+                    }}
+                    className="block w-full text-left text-xs py-2 border-b border-border/50 hover:text-accent"
+                  >
+                    {j.title}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {selectedCompany.contacts && selectedCompany.contacts.length > 0 && (
+              <div>
+                <p className="text-[10px] text-muted uppercase mb-2">Contacts ({selectedCompany.contacts.length})</p>
+                {selectedCompany.contacts.map((c) => (
+                  <div key={c.id} className="text-xs py-1.5 border-b border-border/50">
+                    {c.name}{c.title ? ` · ${c.title}` : ""}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
